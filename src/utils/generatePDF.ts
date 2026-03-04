@@ -192,6 +192,15 @@ export async function generateCotizacionPDF(
   );
   const backendTaxAmount = toNumberOrNull(breakdown?.ivaMonto ?? cotizacion?.ivaMonto) ?? 0;
   const backendTotalAmount = toNumberOrNull(breakdown?.total ?? cotizacion?.total) ?? 0;
+  const backendIvaPct = toNumberOrNull(
+    cotizacion?.ivaPct
+    ?? cotizacion?.ivaPorcentaje
+    ?? cotizacion?.ivaRate
+    ?? breakdown?.ivaPct
+    ?? breakdown?.ivaPorcentaje
+    ?? breakdown?.ivaRate
+  );
+  const ivaPctForLabel = backendIvaPct ?? 16;
 
   const pdfTotals = {
     subtotalLabel: "Subtotal",
@@ -296,7 +305,7 @@ export async function generateCotizacionPDF(
           }).join('')}
         </tbody>
       </table>
-      ${isLast ? `<div class="totales"><div class="resumen-row"><span>${pdfTotals.subtotalLabel}</span><strong>${formatCurrency(pdfTotals.subtotalValue)}</strong></div>${backendDurationDays > 1 ? `<div class="resumen-row"><span>${pdfTotals.subtotalByDaysLabel}</span><strong>${formatCurrency(pdfTotals.subtotalByDaysValue)}</strong></div>` : ''}<div class="resumen-row"><span>IVA (16%)</span><strong>${formatCurrency(pdfTotals.taxValue)}</strong></div><div class="resumen-total"><div class="label">TOTAL</div><div class="value">${formatCurrency(pdfTotals.totalValue)}</div></div></div>` : ''}
+      ${isLast ? `<div class="totales"><div class="resumen-row"><span>${pdfTotals.subtotalLabel}</span><strong>${formatCurrency(pdfTotals.subtotalValue)}</strong></div>${backendDurationDays > 1 ? `<div class="resumen-row"><span>${pdfTotals.subtotalByDaysLabel}</span><strong>${formatCurrency(pdfTotals.subtotalByDaysValue)}</strong></div>` : ''}<div class="resumen-row"><span>IVA (${esc(ivaPctForLabel)}%)</span><strong>${formatCurrency(pdfTotals.taxValue)}</strong></div><div class="resumen-total"><div class="label">TOTAL</div><div class="value">${formatCurrency(pdfTotals.totalValue)}</div></div></div>` : ''}
       <div class="bottom-stack ${isLast ? 'bottom-stack--last' : ''}">
         ${isLast ? `${condicionesHtml}${firmaHtml}` : ''}
       </div>
