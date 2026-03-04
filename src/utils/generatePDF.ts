@@ -146,6 +146,16 @@ export async function generateCotizacionPDF(
     ? Math.floor(parsedDurationDays)
     : 1;
 
+  const breakdown = cotizacion?.breakdown && typeof cotizacion.breakdown === 'object'
+    ? cotizacion.breakdown
+    : null;
+  const parsedBackendDays = Number(breakdown?.numberOfDays ?? breakdown?.eventDays ?? cotizacion?.eventDurationDays);
+  const backendDurationDays = Number.isFinite(parsedBackendDays) && parsedBackendDays > 0
+    ? Math.floor(parsedBackendDays)
+    : 1;
+  const subtotalOneDayBackend = breakdown?.subtotalOneDay ?? cotizacion?.subtotal;
+  const subtotalByDaysBackend = breakdown?.subtotalByDays ?? breakdown?.subtotalFinal;
+
   const condicionesItems = [
     "<strong>Vigencia:</strong> La presente cotización es válida por <strong>5 (cinco) días naturales</strong> a partir de su fecha de emisión y está sujeta a disponibilidad de equipo y servicios al momento de confirmar.",
     "<strong>Reserva del servicio:</strong> Para apartar fecha y confirmar el servicio, se requiere un <strong>anticipo del 30%</strong> del total.",
@@ -156,7 +166,7 @@ export async function generateCotizacionPDF(
   ];
 
   if (eventDurationDays > 1) {
-    condicionesItems.push("Servicios contratados por más de un día consecutivo estarán sujetos a disponibilidad de equipo y podrán generar cargos adicionales por resguardo, mantenimiento o personal, según aplique.");
+    condicionesItems.push("<strong>Servicio por varios días:</strong> Servicios contratados por más de un día consecutivo estarán sujetos a disponibilidad de equipo y podrán generar cargos adicionales por resguardo, mantenimiento o personal, según aplique.");
   }
 
   // HTML de condiciones, firma y footer
@@ -231,7 +241,7 @@ export async function generateCotizacionPDF(
           }).join('')}
         </tbody>
       </table>
-      ${isLast ? `<div class="totales"><div class="resumen-row"><span>Subtotal</span><strong>${formatCurrency(cotizacion?.subtotal || 0)}</strong></div><div class="resumen-row"><span>IVA (16%)</span><strong>${formatCurrency(cotizacion?.ivaMonto || 0)}</strong></div><div class="resumen-total"><div class="label">TOTAL</div><div class="value">${formatCurrency(cotizacion?.total || 0)}</div></div></div>` : ''}
+      ${isLast ? `<div class="totales"><div class="resumen-row"><span>Subtotal</span><strong>${formatCurrency(subtotalOneDayBackend || 0)}</strong></div>${backendDurationDays > 1 ? `<div class="resumen-row"><span>Subtotal x ${esc(backendDurationDays)} días de evento</span><strong>${formatCurrency(subtotalByDaysBackend || 0)}</strong></div>` : ''}<div class="resumen-row"><span>IVA (16%)</span><strong>${formatCurrency(cotizacion?.ivaMonto || 0)}</strong></div><div class="resumen-total"><div class="label">TOTAL</div><div class="value">${formatCurrency(cotizacion?.total || 0)}</div></div></div>` : ''}
       <div class="bottom-stack ${isLast ? 'bottom-stack--last' : ''}">
         ${isLast ? `${condicionesHtml}${firmaHtml}` : ''}
       </div>
