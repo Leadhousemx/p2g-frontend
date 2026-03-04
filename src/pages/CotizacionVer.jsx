@@ -4,6 +4,7 @@ import { getCotizacionById } from "../services/cotizacionesService";
 import { updateCotizacion } from "../services/cotizacionesService";
 import { ChevronRight, FileText, MoreVertical, Eye, FileEdit, Copy } from "lucide-react";
 import { generateCotizacionPDF } from "../utils/generatePDF";
+import { displayQuotationTotals } from "../utils/frontend-quotation-helpers";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -198,6 +199,14 @@ export default function CotizacionVer() {
       : toDateFormatted(eventStartISO || cotizacion?.fechaEvento);
 
   const breakdown = cotizacion?.breakdown || {};
+  const totalsDisplay = displayQuotationTotals(cotizacion);
+  if (totalsDisplay?.hasErrors) {
+    logger.warn("[CotizacionVer] Quotation totals validation failed", {
+      folio: cotizacion?.folio,
+      id: cotizacion?._id,
+      errors: totalsDisplay.errors,
+    });
+  }
   const subtotalOneDay = n(breakdown?.subtotalOneDay ?? subtotal);
   const subtotalByDays = n(breakdown?.subtotalByDays ?? (subtotalOneDay * numberOfDays));
   const breakdownDescuento = n(breakdown?.descuentoTotal ?? descuento);
