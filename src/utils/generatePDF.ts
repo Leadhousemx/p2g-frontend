@@ -171,7 +171,18 @@ export async function generateCotizacionPDF(
     return Number.isFinite(parsed) ? parsed : null;
   };
 
-  const backendSubtotalOneDay = toNumberOrNull(breakdown?.subtotalOneDay ?? cotizacion?.subtotalOneDay);
+  const subtotalOneTime = toNumberOrNull(breakdown?.subtotalOneTime);
+  const subtotalPerDayBase = toNumberOrNull(breakdown?.subtotalPerDayBase);
+  const subtotalOneDayFromParts =
+    subtotalOneTime !== null || subtotalPerDayBase !== null
+      ? (subtotalOneTime ?? 0) + (subtotalPerDayBase ?? 0)
+      : null;
+
+  const backendSubtotalOneDay = toNumberOrNull(
+    breakdown?.subtotalOneDay
+    ?? cotizacion?.subtotalOneDay
+    ?? subtotalOneDayFromParts
+  );
   const backendSubtotalByDays = toNumberOrNull(
     breakdown?.subtotalByDays
     ?? breakdown?.subtotalFinal
