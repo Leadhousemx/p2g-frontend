@@ -25,6 +25,19 @@ export async function generateCotizacionPDF(
     if (Number.isNaN(d.getTime())) return '-';
     return withTime ? d.toLocaleString('es-MX', { day: '2-digit', month: '2-digit', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : d.toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit', year: 'numeric' });
   };
+  const formatDateLong = (v: any) => {
+    if (!v) return '-';
+    const d = new Date(v);
+    if (Number.isNaN(d.getTime())) return '-';
+    return d.toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' });
+  };
+  const addDaysToDate = (v: any, daysToAdd: number) => {
+    if (!v) return null;
+    const d = new Date(v);
+    if (Number.isNaN(d.getTime())) return null;
+    d.setDate(d.getDate() + Math.max(0, Math.floor(Number(daysToAdd) || 0)));
+    return d;
+  };
 
   const getConceptoBadge = (item: any) => {
     const tipoRaw = String(item?.tipo || "").trim();
@@ -153,8 +166,39 @@ export async function generateCotizacionPDF(
   const backendDurationDays = Number.isFinite(parsedBackendDays) && parsedBackendDays > 0
     ? Math.floor(parsedBackendDays)
     : 1;
-  const subtotalOneDayBackend = breakdown?.subtotalOneDay ?? cotizacion?.subtotal;
-  const subtotalByDaysBackend = breakdown?.subtotalByDays ?? breakdown?.subtotalFinal;
+  const toNumberOrNull = (v: any) => {
+    const parsed = Number(v);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
+  const backendSubtotalOneDay = toNumberOrNull(breakdown?.subtotalOneDay ?? cotizacion?.subtotalOneDay);
+  const backendSubtotalByDays = toNumberOrNull(
+    breakdown?.subtotalByDays
+    ?? breakdown?.subtotalFinal
+    ?? cotizacion?.subtotalByDays
+    ?? cotizacion?.subtotalFinal
+    ?? cotizacion?.subtotal
+  );
+  const backendTaxAmount = toNumberOrNull(breakdown?.ivaMonto ?? cotizacion?.ivaMonto) ?? 0;
+  const backendTotalAmount = toNumberOrNull(breakdown?.total ?? cotizacion?.total) ?? 0;
+
+  const pdfTotals = {
+    subtotalLabel: "Subtotal",
+    subtotalValue: backendDurationDays > 1
+      ? (backendSubtotalOneDay ?? 0)
+      : (backendSubtotalOneDay ?? backendSubtotalByDays ?? 0),
+    subtotalByDaysLabel: `Subtotal x ${backendDurationDays} días de evento`,
+    subtotalByDaysValue: backendSubtotalByDays ?? 0,
+    taxValue: backendTaxAmount,
+    totalValue: backendTotalAmount,
+  };
+  const eventDaysForDisplay = backendDurationDays > 0 ? backendDurationDays : eventDurationDays;
+  const eventStartDate = cotizacion?.eventStartDate || cotizacion?.fechaEvento;
+  const computedEventEndDate = addDaysToDate(eventStartDate, eventDaysForDisplay - 1);
+  const eventEndDate = cotizacion?.eventEndDate || computedEventEndDate;
+  const eventDateDisplay = eventDaysForDisplay > 1
+    ? `del ${formatDateLong(eventStartDate)} al ${formatDateLong(eventEndDate)}`
+    : formatDate(cotizacion?.fechaEvento || eventStartDate);
 
   const condicionesItems = [
     "<strong>Vigencia:</strong> La presente cotización es válida por <strong>5 (cinco) días naturales</strong> a partir de su fecha de emisión y está sujeta a disponibilidad de equipo y servicios al momento de confirmar.",
@@ -208,7 +252,7 @@ export async function generateCotizacionPDF(
             <div class="field"><div class="field-label">INVITADOS</div><div class="field-value">${esc(
             cotizacion?.invitados ?? (typeof cotizacion?.invitadosAdultos === 'number' && typeof cotizacion?.invitadosNinos === 'number' ? cotizacion.invitadosAdultos + cotizacion.invitadosNinos : '-')
           )}</div></div>
-            <div class="field"><div class="field-label">FECHA</div><div class="field-value">${formatDate(cotizacion?.fechaEvento)}</div></div>
+            <div class="field"><div class="field-label">FECHA</div><div class="field-value">${eventDateDisplay}</div></div>
             <div class="field"><div class="field-label">LUGAR / DIRECCIÓN</div><div class="field-value">${esc(cotizacion?.direccion || cotizacion?.lugarEvento || "-")}</div></div>
           </div>
         </div>
@@ -241,7 +285,7 @@ export async function generateCotizacionPDF(
           }).join('')}
         </tbody>
       </table>
-      ${isLast ? `<div class="totales"><div class="resumen-row"><span>Subtotal</span><strong>${formatCurrency(subtotalOneDayBackend || 0)}</strong></div>${backendDurationDays > 1 ? `<div class="resumen-row"><span>Subtotal x ${esc(backendDurationDays)} días de evento</span><strong>${formatCurrency(subtotalByDaysBackend || 0)}</strong></div>` : ''}<div class="resumen-row"><span>IVA (16%)</span><strong>${formatCurrency(cotizacion?.ivaMonto || 0)}</strong></div><div class="resumen-total"><div class="label">TOTAL</div><div class="value">${formatCurrency(cotizacion?.total || 0)}</div></div></div>` : ''}
+      ${isLast ? `<div class="totales"><div class="resumen-row"><span>${pdfTotals.subtotalLabel}</span><strong>${formatCurrency(pdfTotals.subtotalValue)}</strong></div>${backendDurationDays > 1 ? `<div class="resumen-row"><span>${pdfTotals.subtotalByDaysLabel}</span><strong>${formatCurrency(pdfTotals.subtotalByDaysValue)}</strong></div>` : ''}<div class="resumen-row"><span>IVA (16%)</span><strong>${formatCurrency(pdfTotals.taxValue)}</strong></div><div class="resumen-total"><div class="label">TOTAL</div><div class="value">${formatCurrency(pdfTotals.totalValue)}</div></div></div>` : ''}
       <div class="bottom-stack ${isLast ? 'bottom-stack--last' : ''}">
         ${isLast ? `${condicionesHtml}${firmaHtml}` : ''}
       </div>
