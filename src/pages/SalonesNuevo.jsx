@@ -1,7 +1,14 @@
 // src/pages/SalonesNuevo.jsx
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Button, Input, Textarea, Card, CardHeader, CardContent, CardFooter, Label } from "@/components/ui";
+import ContentShell from "../components/common/ContentShell";
+import FieldGrid from "../components/common/forms/FieldGrid";
+import FormActionsBar from "../components/common/forms/FormActionsBar";
+import FormPageShell from "../components/common/forms/FormPageShell";
+import FormSection from "../components/common/forms/FormSection";
+import { logger } from "../lib/logger";
+import { createSalon } from "../services/salonesService";
+import { Button, Input, Textarea, Label } from "@/components/ui";
 
 const PALETA = [
   { key: "azul", hex: "#2563eb" },
@@ -21,6 +28,8 @@ export default function SalonesNuevo() {
     { id: crypto.randomUUID(), nombre: "Contrato salón", machote: "" },
   ]);
   const [errors, setErrors] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [submitError, setSubmitError] = useState("");
 
   const addContrato = () => {
     setContratos((prev) => [...prev, { id: crypto.randomUUID(), nombre: "", machote: "" }]);
@@ -41,121 +50,195 @@ export default function SalonesNuevo() {
     return Object.keys(e).length === 0;
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     if (!validate()) return;
-    const payload = { nombre, telefono, color, contratos };
-    console.log("Nuevo salón:", payload);
-    navigate("/salones");
+
+    setSaving(true);
+    setSubmitError("");
+
+    try {
+      const createdSalon = await createSalon({
+        nombre: nombre.trim(),
+        telefono: telefono.trim(),
+      });
+      const createdSalonSnapshot = {
+        _id:
+          createdSalon?._id
+          || createdSalon?.id
+          || createdSalon?.data?._id
+          || createdSalon?.data?.id
+          || createdSalon?.negocio?._id
+          || createdSalon?.negocio?.id
+          || `salon-preview-${Date.now()}`,
+        nombre:
+          createdSalon?.nombre
+          || createdSalon?.data?.nombre
+          || createdSalon?.negocio?.nombre
+          || nombre.trim(),
+        telefono:
+          createdSalon?.telefono
+          || createdSalon?.data?.telefono
+          || createdSalon?.negocio?.telefono
+          || telefono.trim(),
+        activo:
+          typeof createdSalon?.activo === "boolean"
+            ? createdSalon.activo
+            : typeof createdSalon?.data?.activo === "boolean"
+              ? createdSalon.data.activo
+              : typeof createdSalon?.negocio?.activo === "boolean"
+                ? createdSalon.negocio.activo
+                : true,
+      };
+      navigate("/salones", {
+        state: {
+          salonesRefresh: {
+            refreshKey: Date.now(),
+            salonId: createdSalonSnapshot._id,
+            salonName: createdSalonSnapshot.nombre,
+            salon: createdSalonSnapshot,
+            focusInSearch: true,
+          },
+        },
+      });
+    } catch (err) {
+      logger.error("Error creating salon:", err);
+      setSubmitError(err?.response?.data?.message || "Error al crear el salón. Intenta de nuevo.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
-    <>
-      <h1 className="text-2xl font-bold text-[#2563eb] mb-4">Nuevo salón</h1>
+    <ContentShell className="min-h-full bg-[#F4F6F9] py-4 sm:py-5 lg:py-6" padding="responsive">
+      <FormPageShell
+        title="Nuevo salón"
+        description="Da de alta un salón conservando intacto el flujo actual de creación, validación y regreso al listado."
+        className="max-w-5xl space-y-5 lg:space-y-6"
+        actions={
+          <Button type="button" variant="outline" onClick={() => navigate("/salones")} disabled={saving} className="w-full sm:w-auto">
+            Cancelar
+          </Button>
+        }
+      >
+        {submitError ? (
+          <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 shadow-sm">
+            {submitError}
+          </div>
+        ) : null}
 
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <Card>
-          <CardHeader>
-            <h2 className="text-lg font-semibold">Datos del salón</h2>
-          </CardHeader>
-          <CardContent className="grid gap-4">
-            <div>
-              <Label htmlFor="nombre">Nombre del salón</Label>
-              <Input
-                id="nombre"
-                value={nombre}
-                onChange={(e) => setNombre(e.target.value)}
-                placeholder="Ej. Salón Las Palmas"
-                aria-invalid={!!errors.nombre}
-              />
-              {errors.nombre && <p className="text-red-600 text-sm mt-1">{errors.nombre}</p>}
-            </div>
-
-            <div>
-              <Label htmlFor="telefono">Teléfono</Label>
-              <Input
-                id="telefono"
-                value={telefono}
-                onChange={(e) => setTelefono(e.target.value)}
-                placeholder="Ej. 999-123-4567"
-                aria-invalid={!!errors.telefono}
-              />
-              {errors.telefono && <p className="text-red-600 text-sm mt-1">{errors.telefono}</p>}
-            </div>
-
-            <div>
-              <Label>Color de identificación</Label>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {PALETA.map((c) => (
-                  <button
-                    key={c.key}
-                    type="button"
-                    title={c.key}
-                    onClick={() => setColor(c.hex)}
-                    className={`h-8 w-8 rounded-full border-2 ${
-                      color === c.hex ? "border-black ring-2 ring-black/20" : "border-transparent"
-                    }`}
-                    style={{ backgroundColor: c.hex }}
-                    aria-pressed={color === c.hex}
-                  />
-                ))}
+        <form onSubmit={handleSubmit} className="space-y-5 lg:space-y-6">
+          <FormSection
+            title="Datos del salón"
+            description="Captura los datos base del salón manteniendo intacta la validación local actual."
+          >
+            <FieldGrid>
+              <div>
+                <Label htmlFor="nombre">Nombre del salón</Label>
+                <Input
+                  id="nombre"
+                  value={nombre}
+                  onChange={(e) => setNombre(e.target.value)}
+                  placeholder="Ej. Salón Las Palmas"
+                  aria-invalid={!!errors.nombre}
+                />
+                {errors.nombre && <p className="mt-1 text-sm text-red-600">{errors.nombre}</p>}
               </div>
-              {errors.color && <p className="text-red-600 text-sm mt-1">{errors.color}</p>}
-              <p className="text-xs text-gray-500 mt-1">
-                Este color se usará para mostrar en el calendario las fechas agendadas de este negocio.
-              </p>
-            </div>
-          </CardContent>
-        </Card>
 
-        <Card>
-          <CardHeader className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Contratos de servicio</h2>
-            <Button type="button" variant="outline" onClick={addContrato}>
-              Agregar contrato
-            </Button>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {contratos.map((c, idx) => (
-              <div key={c.id} className="rounded-xl border p-3 space-y-2">
-                <div className="flex items-center justify-between">
-                  <Label className="text-sm">Contrato #{idx + 1}</Label>
-                  <Button type="button" variant="ghost" onClick={() => removeContrato(c.id)}>
-                    Eliminar
-                  </Button>
-                </div>
-                <div>
-                  <Label htmlFor={`contrato-nombre-${c.id}`}>Nombre del contrato</Label>
-                  <Input
-                    id={`contrato-nombre-${c.id}`}
-                    placeholder="Ej. Contrato todo incluido"
-                    value={c.nombre}
-                    onChange={(e) => updateContrato(c.id, { nombre: e.target.value })}
-                  />
-                </div>
-                <div>
-                  <Label htmlFor={`contrato-machote-${c.id}`}>Machote (plantilla)</Label>
-                  <Textarea
-                    id={`contrato-machote-${c.id}`}
-                    placeholder="Pega aquí el machote del contrato…"
-                    value={c.machote}
-                    onChange={(e) => updateContrato(c.id, { machote: e.target.value })}
-                    className="min-h-[120px]"
-                  />
-                </div>
+              <div>
+                <Label htmlFor="telefono">Teléfono</Label>
+                <Input
+                  id="telefono"
+                  value={telefono}
+                  onChange={(e) => setTelefono(e.target.value)}
+                  placeholder="Ej. 999-123-4567"
+                  aria-invalid={!!errors.telefono}
+                />
+                {errors.telefono && <p className="mt-1 text-sm text-red-600">{errors.telefono}</p>}
               </div>
-            ))}
 
-            {contratos.length === 0 && (
-              <p className="text-gray-500 text-sm">No hay contratos. Usa “Agregar contrato”.</p>
-            )}
-          </CardContent>
-          <CardFooter className="flex items-center justify-end gap-2">
-            <Button type="button" variant="outline" onClick={() => navigate("/salones")}>Cancelar</Button>
-            <Button type="submit">Guardar</Button>
-          </CardFooter>
-        </Card>
-      </form>
-    </>
+              <div className="md:col-span-2">
+                <Label>Color de identificación</Label>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {PALETA.map((c) => (
+                    <button
+                      key={c.key}
+                      type="button"
+                      title={c.key}
+                      onClick={() => setColor(c.hex)}
+                      className={`h-8 w-8 rounded-full border-2 ${
+                        color === c.hex ? "border-black ring-2 ring-black/20" : "border-transparent"
+                      }`}
+                      style={{ backgroundColor: c.hex }}
+                      aria-pressed={color === c.hex}
+                    />
+                  ))}
+                </div>
+                {errors.color && <p className="mt-1 text-sm text-red-600">{errors.color}</p>}
+                <p className="mt-1 text-xs text-gray-500">
+                  Este color se usará para mostrar en el calendario las fechas agendadas de este negocio.
+                </p>
+              </div>
+            </FieldGrid>
+          </FormSection>
+
+          <FormSection
+            title="Contratos de servicio"
+            description="Mantén el bloque actual de contratos y machotes sin alterar todavía su comportamiento funcional."
+          >
+            <div className="mb-4 flex justify-start sm:justify-end">
+              <Button type="button" variant="outline" onClick={addContrato} className="w-full sm:w-auto">
+                Agregar contrato
+              </Button>
+            </div>
+
+            <div className="space-y-4">
+              {contratos.map((c, idx) => (
+                <div key={c.id} className="space-y-2 rounded-xl border p-3">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <Label className="text-sm">Contrato #{idx + 1}</Label>
+                    <Button type="button" variant="ghost" onClick={() => removeContrato(c.id)} className="w-full sm:w-auto">
+                      Eliminar
+                    </Button>
+                  </div>
+                  <div>
+                    <Label htmlFor={`contrato-nombre-${c.id}`}>Nombre del contrato</Label>
+                    <Input
+                      id={`contrato-nombre-${c.id}`}
+                      placeholder="Ej. Contrato todo incluido"
+                      value={c.nombre}
+                      onChange={(e) => updateContrato(c.id, { nombre: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor={`contrato-machote-${c.id}`}>Machote (plantilla)</Label>
+                    <Textarea
+                      id={`contrato-machote-${c.id}`}
+                      placeholder="Pega aquí el machote del contrato…"
+                      value={c.machote}
+                      onChange={(e) => updateContrato(c.id, { machote: e.target.value })}
+                      className="min-h-[120px]"
+                    />
+                  </div>
+                </div>
+              ))}
+
+              {contratos.length === 0 && (
+                <p className="text-sm text-gray-500">No hay contratos. Usa “Agregar contrato”.</p>
+              )}
+            </div>
+
+            <FormActionsBar>
+              <Button type="button" variant="outline" onClick={() => navigate("/salones")} disabled={saving} className="w-full sm:w-auto">
+                Cancelar
+              </Button>
+              <Button type="submit" disabled={saving} className="w-full sm:w-auto">
+                {saving ? "Guardando..." : "Guardar"}
+              </Button>
+            </FormActionsBar>
+          </FormSection>
+        </form>
+      </FormPageShell>
+    </ContentShell>
   );
 }

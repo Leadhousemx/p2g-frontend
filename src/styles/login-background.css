@@ -1,0 +1,53 @@
+/* Deep space atmosphere — CSS animations only, no star logic here */
+
+@keyframes nebulaPulse {
+  from { opacity: 0.5; }
+  to   { opacity: 1; }
+}
+
+.nebula-a {
+  animation: nebulaPulse 88s ease-in-out infinite alternate;
+}
+
+.nebula-b {
+  animation: nebulaPulse 112s ease-in-out infinite alternate-reverse;
+}
+
+@keyframes streakPulse {
+  from { opacity: 0.4; }
+  to   { opacity: 1; }
+}
+
+.streak-a {
+  animation: streakPulse 94s ease-in-out infinite alternate;
+}
+
+.streak-b {
+  animation: streakPulse 118s ease-in-out infinite alternate-reverse;
+}
+
+/* Center nebula — slower breathing than edge clouds; subtler amplitude */
+@keyframes nebulaCenterPulse {
+  from { opacity: 0.55; }
+  to   { opacity: 1; }
+}
+
+.nebula-center-a {
+  animation: nebulaCenterPulse 96s ease-in-out infinite alternate;
+}
+
+.nebula-center-b {
+  animation: nebulaCenterPulse 124s ease-in-out infinite alternate-reverse;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nebula-a,
+  .nebula-b,
+  .nebula-center-a,
+  .nebula-center-b,
+  .streak-a,
+  .streak-b {
+    animation: none !important;
+    opacity: 0.75;
+  }
+}

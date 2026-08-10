@@ -1,3 +1,4 @@
+// Inactive placeholder retained temporarily during the Salones rescue phase.
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui";
 

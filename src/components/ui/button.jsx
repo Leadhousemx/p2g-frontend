@@ -1,15 +1,18 @@
 import clsx from "clsx";
+import React from "react";
 
 export function Button({
   className,
   variant = "primary",
   size = "md",
+  asChild = false,
   ...props
 }) {
   const base =
     "inline-flex items-center justify-center rounded-2xl font-medium focus:outline-none focus:ring disabled:opacity-60 disabled:pointer-events-none transition";
   const variants = {
     primary: "bg-[#2563eb] text-white hover:bg-[#1d4ed8]",
+    secondary: "border border-gray-300 bg-white hover:bg-gray-50",
     outline: "border border-gray-300 bg-white hover:bg-gray-50",
     ghost: "hover:bg-gray-100",
     destructive: "bg-red-600 text-white hover:bg-red-700",
@@ -21,14 +24,24 @@ export function Button({
     lg: "text-base px-4.5 py-2.5",
   };
 
+  const classes = clsx(
+    base,
+    variants[variant] ?? variants.primary,
+    sizes[size] ?? sizes.md,
+    className
+  );
+
+  if (asChild) {
+    // Si asChild es true, clona el hijo y le agrega las clases
+    const child = React.Children.only(props.children);
+    return React.cloneElement(child, {
+      className: clsx(classes, child.props.className),
+    });
+  }
+
   return (
     <button
-      className={clsx(
-        base,
-        variants[variant] ?? variants.primary,
-        sizes[size] ?? sizes.md,
-        className
-      )}
+      className={classes}
       {...props}
     />
   );

@@ -1,3 +1,27 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+/* Glow pulse animation for logo */
+@keyframes glowPulse {
+  0%, 100% {
+    filter: drop-shadow(0 0 14px rgba(168, 85, 247, 0.65));
+  }
+  50% {
+    filter: drop-shadow(0 0 22px rgba(56, 189, 248, 0.65));
+  }
+}
+
+.animate-glow {
+  animation: glowPulse 3.2s ease-in-out infinite;
+}
+
+.quote-line-item-stepper-input::-webkit-outer-spin-button,
+.quote-line-item-stepper-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.quote-line-item-stepper-input {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}

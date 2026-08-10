@@ -1,16 +1,60 @@
+import apiClient from '../api/axiosConfig';
+import { getToken, getRefreshToken } from '../utils/tokenManager';
 
-import axios from "axios";
+/**
+ * Alias para compatibilidad retroactiva
+ * El nuevo sistema usa apiClient desde axiosConfig.ts
+ * que ya incluye CSRF token handling automático
+ */
+export const api = apiClient;
+export const apiCookieOnly = apiClient;
 
-const viteEnv = (import.meta as any).env || {};
-export const api = axios.create({
-  baseURL: viteEnv.VITE_API_URL,
-  // withCredentials: true, // habilítalo si backend usa cookies
-});
+/**
+ * Verificar sesión actual del usuario
+ * GET /api/auth/verify
+ */
+export async function verifySession() {
+  try {
+    const response = await apiClient.get<{
+      valid: boolean;
+      userId: string;
+      empresaId: string;
+      tokenSource: string;
+    }>('/api/auth/verify', {
+      timeout: 8000,
+    });
+    return response;
+  } catch (error: any) {
+    const status = Number(error?.response?.status || 0);
+    if (status === 404) {
+      return null;
+    }
+    console.error('❌ Session verification failed:', error);
+    throw error;
+  }
+}
 
-api.interceptors.request.use((config) => {
-  const token = localStorage.getItem("auth.token");
-  if (token) config.headers.Authorization = `Bearer ${token}`;
-  return config;
-});
+/**
+ * Logout: Limpiar sesión
+ * POST /api/auth/logout
+ */
+export async function logout() {
+  try {
+    await apiClient.post('/api/auth/logout');
+    console.log('✅ Logout exitoso');
+  } catch (error) {
+    console.error('❌ Error en logout:', error);
+    throw error;
+  }
+}
 
-export function getApiBaseUrl() { return viteEnv.VITE_API_URL; }
+/**
+ * Obtener URL base del API
+ */
+export function getApiBaseUrl() {
+  return import.meta.env.DEV
+    ? ''
+    : (import.meta.env.VITE_API_URL || 'https://api.brentrix.com');
+}
+
+export default apiClient;

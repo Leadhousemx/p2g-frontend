@@ -1,56 +1,63 @@
-import { useEffect, useState } from "react";
+﻿import { useEffect, useState, useCallback } from "react";
+import { listPaquetes as fetchPaquetes, deletePaquete } from "../services/paquetesService";
+import type { Paquete } from "../services/paquetesService";
+import { logger } from "../lib/logger";
+interface UsePaquetesOptions {
+  searchNombre?: string;
+  page?: number;
+  pageSize?: number;
+  activo?: boolean;
+}
 
-export type Paquete = {
-  id: string;
-  nombre: string;
-  codigo: string;
-  activo: boolean;
-};
-
-const MOCK_PAQUETES: Paquete[] = Array.from({ length: 13 }).map((_, i) => ({
-  id: String(i + 1),
-  nombre: `Paquete ${String.fromCharCode(65 + i)}`,
-  codigo: `PKT-${1000 + i}`,
-  activo: i % 3 !== 0,
-}));
-
-export function usePaquetes({ searchNombre = "", page = 1, pageSize = 10 }) {
+export function usePaquetes(options: UsePaquetesOptions = {}) {
+  const { searchNombre = "", page = 1, pageSize = 10, activo } = options;
   const [paquetes, setPaquetes] = useState<Paquete[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [total, setTotal] = useState(MOCK_PAQUETES.length);
+  const [loading, setLoading] = useState(false);
+  const [total, setTotal] = useState(0);
+  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    setLoading(true);
-    let data = [...MOCK_PAQUETES];
-    if (searchNombre) {
-      data = data.filter(p => p.nombre.toLowerCase().includes(searchNombre.toLowerCase()));
+  const fetch = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      const result = await fetchPaquetes({
+        nombre: searchNombre || undefined,
+        page,
+        pageSize,
+        activo,
+      });
+
+      setPaquetes(result.paquetes || []);
+      setTotal(result.total || 0);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Error loading paquetes";
+      setError(message);
+      logger.error("Error loading paquetes:", err);
+      setPaquetes([]);
+      setTotal(0);
+    } finally {
+      setLoading(false);
     }
-    setTotal(data.length);
-    const start = (page - 1) * pageSize;
-    setPaquetes(data.slice(start, start + pageSize));
-    setTimeout(() => setLoading(false), 400);
-  }, [searchNombre, page, pageSize]);
+  }, [searchNombre, page, pageSize, activo]);
 
-  // Para eliminar (mock)
+  const refetch = fetch;
+
   useEffect(() => {
-    // @ts-ignore
-    window.__removePaquete = (id: string) => {
-      const idx = MOCK_PAQUETES.findIndex(p => p.id === id);
-      if (idx !== -1) MOCK_PAQUETES.splice(idx, 1);
-      setPaquetes(p => p.filter(x => x.id !== id));
-      setTotal(MOCK_PAQUETES.length);
-      return Promise.resolve();
-    };
-  }, []);
+    fetch();
+  }, [fetch]);
 
-  // TODO: fetch real
-  // useEffect(() => {
-  //   setLoading(true);
-  //   fetch(`/api/paquetes?...`)
-  //     .then(r => r.json())
-  //     .then(data => { setPaquetes(data.items); setTotal(data.total); })
-  //     .finally(() => setLoading(false));
-  // }, [searchNombre, page, pageSize]);
+  const remove = useCallback(
+    async (id: string) => {
+      try {
+        await deletePaquete(id);
+        setPaquetes((prev) => prev.filter((p) => p._id !== id));
+      } catch (err) {
+        logger.error("Error deleting paquete:", err);
+        throw err;
+      }
+    },
+    []
+  );
 
-  return { paquetes, total, loading };
+  return { paquetes, total, loading, error, refetch, remove };
 }
