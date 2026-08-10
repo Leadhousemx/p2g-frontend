@@ -389,7 +389,7 @@ export default function CotizacionForm() {
         ivaPorcentaje: resolveInitialIvaPorcentaje(cotizacionOriginal),
         descuentoTipo: cotizacionOriginal?.descuentoTipo || "monto",
         descuento: cotizacionOriginal?.descuento || 0,
-        anticipo: cotizacionOriginal?.anticipo || 0,
+        anticipo: 0,
         notas: cotizacionOriginal?.notas || "",
       };
 
