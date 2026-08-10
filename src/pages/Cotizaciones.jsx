@@ -1,37 +1,54 @@
-import { useEffect, useMemo, useState, Fragment } from "react";
+﻿import { useEffect, useMemo, useState, Fragment } from "react";
 import { useReactTable, getCoreRowModel, flexRender } from "@tanstack/react-table";
 import { Dialog, Transition } from "@headlessui/react";
-import { Search, Filter, FileDown, FileText, Plus, CheckCircle, XCircle, CreditCard } from "lucide-react";
-import { useNavigate, useLocation } from "react-router-dom";
+import { Search, Filter, FileDown, FileText, Plus, CheckCircle, CreditCard, ArrowUpDown, ArrowUp, ArrowDown, CheckCheck, Loader2 } from "lucide-react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import ActionsMenu from "../components/ActionsMenu";
-import { listCotizaciones, getCotizacionById, deleteCotizacion, updateCotizacion } from "../services/cotizacionesService";
+import { useAuth } from "../context/auth-context";
+import { getCotizacionById, deleteCotizacion, updateCotizacion, cerrarEventoCotizacion, cancelarEventoCotizacion } from "../services/cotizacionesService";
+import CancelarEventoModal from "../components/cotizacion/CancelarEventoModal";
+import { listClientes } from "../services/clientesService";
 import { generateCotizacionPDF } from "../utils/generatePDF";
 import { exportCotizacionesToExcel, exportCotizacionesToPDF } from "../utils/exportUtils";
 import { displayQuotationTotals } from "../utils/frontend-quotation-helpers";
+import { canDeleteRecords, isAdminRole } from "../utils/rolePermissions";
+import { addDaysToDateOnly, extractDateOnly } from "../utils/dateOnly";
 import { logger } from "../lib/logger";
+import { useCotizaciones } from "../hooks/useCotizaciones";
+import { useNegocios } from "../hooks/useNegocios";
+import {
+  ESTADOS_DROPDOWN,
+  getQuotationStatusConfig,
+  normalizeQuotationStatus,
+  isValidQuotationStatusForSubmit,
+} from "../constants/quotationStatus";
+
+const DEFAULT_PAGE = 1;
+const DEFAULT_PAGE_SIZE = 10;
+const PAGE_SIZE_OPTIONS = [10, 25, 50];
+const SORTABLE_COLUMNS = {
+  folio: "folio",
+  nombreEvento: "nombreEvento",
+  fechaEvento: "fechaEvento",
+  total: "total",
+  estado: "estado",
+};
+
 const getEstadoClass = (estado) => {
-  switch(estado) {
-    case "Contratado":
-      return "bg-green-50 text-green-700 border border-green-200"; // Verde suave
-    case "Cotizado":
-    case "Pendiente":
-      return "bg-amber-50 text-amber-700 border border-amber-200"; // Amarillo suave
-    case "Cancelado":
-      return "bg-gray-100 text-gray-600 border border-gray-200"; // Gris suave
-    default:
-      return "bg-gray-100 text-gray-600 border border-gray-200";
+  if (estado === "Pendiente") {
+    return "bg-amber-50 text-amber-700 border border-amber-200";
   }
+  return `${getQuotationStatusConfig(estado).badgeClass} border`;
+};
+
+const getEstadoOperativoClass = (eventoCerrado) => {
+  return eventoCerrado
+    ? "bg-slate-100 text-slate-700 border-slate-200"
+    : "bg-emerald-50 text-emerald-700 border-emerald-200";
 };
 
 function toDateISO(d) {
-  if (!d) return "";
-  try {
-    const dt = new Date(d);
-    if (Number.isNaN(dt.getTime())) return "";
-    return dt.toISOString().slice(0, 10);
-  } catch {
-    return "";
-  }
+  return extractDateOnly(d);
 }
 
 function clampDurationDays(value) {
@@ -41,97 +58,205 @@ function clampDurationDays(value) {
 }
 
 function addDaysFromISO(startISO, daysToAdd) {
-  if (!startISO) return "";
-  try {
-    const dt = new Date(`${startISO}T00:00:00`);
-    if (Number.isNaN(dt.getTime())) return "";
-    dt.setDate(dt.getDate() + Math.max(0, daysToAdd));
-    return dt.toISOString().slice(0, 10);
-  } catch {
-    return "";
-  }
+  return addDaysToDateOnly(startISO, daysToAdd);
+}
+
+function parsePositiveNumber(value, fallback) {
+  const parsedValue = Number(value);
+  return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : fallback;
+}
+
+function normalizeTextFilter(value) {
+  const normalized = String(value || "").trim();
+  return normalized || "";
+}
+
+function getInitialSortOrder(value) {
+  return value === "asc" || value === "desc" ? value : "";
+}
+
+function getClientName(cotizacion) {
+  return cotizacion?.cliente?.nombre || cotizacion?.clienteId?.nombre || "Sin cliente";
 }
 
 export default function CotizacionesPage() {
   const navigate = useNavigate();
-  const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { user } = (useAuth() || {});
+  const allowDelete = canDeleteRecords(user);
+  const isAdmin = isAdminRole(user);
   const [filtroOpen, setFiltroOpen] = useState(false);
-  const [busqueda, setBusqueda] = useState("");
-  const [sugerencias, setSugerencias] = useState([]);
-  const [paginaActual, setPaginaActual] = useState(1);
-  const registrosPorPagina = 10;
+  const [page, setPage] = useState(parsePositiveNumber(searchParams.get("page"), DEFAULT_PAGE));
+  const [pageSize, setPageSize] = useState(parsePositiveNumber(searchParams.get("pageSize"), DEFAULT_PAGE_SIZE));
+  const [searchTerm, setSearchTerm] = useState(searchParams.get("q") || "");
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState(searchParams.get("q") || "");
+  const [estado, setEstado] = useState(searchParams.get("estado") || "");
+  const [clienteId, setClienteId] = useState(searchParams.get("clienteId") || "");
+  const [negocioId, setNegocioId] = useState(searchParams.get("negocioId") || "");
+  const [fechaInicio, setFechaInicio] = useState(searchParams.get("fechaInicio") || "");
+  const [fechaFin, setFechaFin] = useState(searchParams.get("fechaFin") || "");
+  const [folio, setFolio] = useState(searchParams.get("folio") || "");
+  const [sortBy, setSortBy] = useState(searchParams.get("sortBy") || "");
+  const [sortOrder, setSortOrder] = useState(getInitialSortOrder(searchParams.get("sortOrder")));
+  const [draftFilters, setDraftFilters] = useState({
+    estado: searchParams.get("estado") || "",
+    clienteId: searchParams.get("clienteId") || "",
+    negocioId: searchParams.get("negocioId") || "",
+    fechaInicio: searchParams.get("fechaInicio") || "",
+    fechaFin: searchParams.get("fechaFin") || "",
+    folio: searchParams.get("folio") || "",
+  });
+  const [clientSearch, setClientSearch] = useState("");
+  const [clientOptions, setClientOptions] = useState([]);
+  const [clientOptionsLoading, setClientOptionsLoading] = useState(false);
+  const [closingEventoId, setClosingEventoId] = useState(null);
+  const [cancelarEventoId, setCancelarEventoId] = useState(null);
+  const [cancelandoEvento, setCancelandoEvento] = useState(false);
+  const [cancelarEventoError, setCancelarEventoError] = useState("");
 
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [data, setData] = useState([]);
+  const { negocios = [] } = useNegocios({ pageSize: 100, activo: true });
+  const {
+    cotizaciones,
+    loading,
+    error,
+    total,
+    totalPages,
+    hasNextPage,
+    hasPrevPage,
+    refetch,
+  } = useCotizaciones({
+    page,
+    pageSize,
+    q: debouncedSearchTerm,
+    estado: estado || undefined,
+    clienteId: clienteId || undefined,
+    negocioId: negocioId || undefined,
+    fechaInicio: fechaInicio || undefined,
+    fechaFin: fechaFin || undefined,
+    sortBy: sortBy || undefined,
+    sortOrder: sortOrder || undefined,
+    folio: folio || undefined,
+  });
 
-  // Función para cargar cotizaciones
-  const fetchCotizaciones = async () => {
-    setLoading(true);
-    setError("");
-    try {
-      const list = await listCotizaciones();
-      
-      // Normalizar al shape de la tabla actual
-      const normalized = (list || []).map((c) => {
-        const clienteNombre = c?.cliente?.nombre || "Sin cliente";
-        const numberOfDays = clampDurationDays(c?.eventDurationDays ?? c?.breakdown?.numberOfDays ?? 1);
-        const eventStartDate = toDateISO(c?.eventStartDate || c?.fechaEvento);
-        const eventEndDate = toDateISO(c?.eventEndDate) || addDaysFromISO(eventStartDate, numberOfDays - 1);
-        const totalsDisplay = displayQuotationTotals(c);
-        if (totalsDisplay?.hasErrors) {
-          logger.warn("[Cotizaciones] Quotation totals validation failed", {
-            folio: c?.folio,
-            id: c?._id,
-            errors: totalsDisplay.errors,
-          });
-        }
-        const total = totalsDisplay?.hasErrors
-          ? Number(c?.breakdown?.total ?? c?.total ?? 0)
-          : Number(totalsDisplay?.display?.total ?? c?.breakdown?.total ?? c?.total ?? 0);
-        
-        return {
-          _id: c?._id,
-          id: c?.folio || "-", // No. Cotización
-          evento: c?.nombreEvento || "-",
-          cliente: clienteNombre,
-          invitados: (Number(c?.invitadosAdultos || 0) + Number(c?.invitadosNinos || 0)) || 0,
-          fechaEvento: eventStartDate,
-          fechaEventoFin: eventEndDate,
-          eventDurationDays: numberOfDays,
-          horaInicio: c?.horaInicio || "",
-          horaFin: c?.horaFin || "",
-          fechaCotizacion: toDateISO(c?.createdAt),
-          total: total,
-          anticipo: Number(c?.anticipo || 0),
-          estado: c?.estado || "Cotizado",
-        };
-      });
-      setData(normalized);
-    } catch (err) {
-      logger.error("Error listCotizaciones:", err);
-      const msg = err?.response?.data?.msg || err?.message || "No se pudieron cargar las cotizaciones";
-      setError(msg);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Cargar datos cuando cambia la ubicación (se vuelve a esta página)
   useEffect(() => {
-    fetchCotizaciones();
-  }, [location.pathname]);
+    const timer = window.setTimeout(() => {
+      const nextQ = normalizeTextFilter(searchTerm);
+      const didSearchChange = nextQ !== debouncedSearchTerm;
+      setDebouncedSearchTerm(nextQ);
+      if (didSearchChange) {
+        setPage(1);
+      }
+    }, 300);
+
+    return () => window.clearTimeout(timer);
+  }, [searchTerm, debouncedSearchTerm]);
+
+  useEffect(() => {
+    setDraftFilters({ estado, clienteId, negocioId, fechaInicio, fechaFin, folio });
+  }, [estado, clienteId, negocioId, fechaInicio, fechaFin, folio]);
+
+  useEffect(() => {
+    const nextParams = new URLSearchParams();
+    nextParams.set("page", String(page));
+    nextParams.set("pageSize", String(pageSize));
+    if (debouncedSearchTerm) nextParams.set("q", debouncedSearchTerm);
+    if (estado) nextParams.set("estado", estado);
+    if (clienteId) nextParams.set("clienteId", clienteId);
+    if (negocioId) nextParams.set("negocioId", negocioId);
+    if (fechaInicio) nextParams.set("fechaInicio", fechaInicio);
+    if (fechaFin) nextParams.set("fechaFin", fechaFin);
+    if (folio) nextParams.set("folio", folio);
+    if (sortBy) nextParams.set("sortBy", sortBy);
+    if (sortOrder) nextParams.set("sortOrder", sortOrder);
+    setSearchParams(nextParams, { replace: true });
+  }, [page, pageSize, debouncedSearchTerm, estado, clienteId, negocioId, fechaInicio, fechaFin, folio, sortBy, sortOrder, setSearchParams]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const fetchClientOptions = async () => {
+      setClientOptionsLoading(true);
+      try {
+        const response = await listClientes({
+          page: 1,
+          pageSize: 20,
+          q: clientSearch || undefined,
+        });
+        if (!cancelled) {
+          setClientOptions(Array.isArray(response?.clientes) ? response.clientes : []);
+        }
+      } catch (err) {
+        logger.error("Error loading client filter options:", err);
+        if (!cancelled) {
+          setClientOptions([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setClientOptionsLoading(false);
+        }
+      }
+    };
+
+    fetchClientOptions();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [clientSearch]);
+
+  const rows = useMemo(() => {
+    return (cotizaciones || []).map((cotizacion) => {
+      const clienteNombre = getClientName(cotizacion);
+      const numberOfDays = clampDurationDays(cotizacion?.eventDurationDays ?? cotizacion?.breakdown?.numberOfDays ?? 1);
+      const eventStartDate = toDateISO(cotizacion?.eventStartDate || cotizacion?.fechaEvento);
+      const eventEndDate = toDateISO(cotizacion?.eventEndDate) || addDaysFromISO(eventStartDate, numberOfDays - 1);
+      const totalsDisplay = displayQuotationTotals(cotizacion);
+
+      if (totalsDisplay?.hasErrors) {
+        logger.warn("[Cotizaciones] Quotation totals validation failed", {
+          folio: cotizacion?.folio,
+          id: cotizacion?._id,
+          errors: totalsDisplay.errors,
+        });
+      }
+
+      return {
+        raw: cotizacion,
+        _id: cotizacion?._id,
+        folio: cotizacion?.folio || "-",
+        evento: cotizacion?.nombreEvento || "-",
+        cliente: clienteNombre,
+        invitados: (Number(cotizacion?.invitadosAdultos || 0) + Number(cotizacion?.invitadosNinos || 0)) || 0,
+        fechaEvento: eventStartDate,
+        fechaEventoFin: eventEndDate,
+        eventDurationDays: numberOfDays,
+        horaInicio: cotizacion?.horaInicio || "",
+        horaFin: cotizacion?.horaFin || "",
+        fechaCotizacion: toDateISO(cotizacion?.createdAt),
+        total: Number(cotizacion?.total ?? 0),
+        anticipo: Number(cotizacion?.anticipo || 0),
+        estado: cotizacion?.eventoCancelado === true ? "Cancelado" : normalizeQuotationStatus(cotizacion?.estado),
+        eventoCerrado: cotizacion?.eventoCerrado === true,
+        eventoCancelado: cotizacion?.eventoCancelado === true,
+        estadoOperativoEvento: cotizacion?.estadoOperativoEvento || (cotizacion?.eventoCerrado ? "Evento cerrado" : "Evento activo"),
+        fechaCierreEvento: toDateISO(cotizacion?.fechaCierreEvento),
+      };
+    });
+  }, [cotizaciones]);
 
   const updateEstado = async (row, nuevoEstado) => {
     const id = row?._id;
     const estadoActual = row?.estado || "Cotizado";
     if (!id || estadoActual === nuevoEstado) return;
 
+    if (!isValidQuotationStatusForSubmit(nuevoEstado)) {
+      alert("Estado inválido. Selecciona un estado permitido.");
+      return;
+    }
+
     try {
       await updateCotizacion(id, { estado: nuevoEstado });
-      setData((prev) =>
-        prev.map((item) => (item._id === id ? { ...item, estado: nuevoEstado } : item))
-      );
+      refetch();
     } catch (err) {
       logger.error("Error al actualizar estado:", err);
       const msg = err?.response?.data?.msg || err?.message || "No se pudo actualizar el estado";
@@ -139,16 +264,110 @@ export default function CotizacionesPage() {
     }
   };
 
+  const handleCerrarEvento = (row) => {
+    const id = row?._id;
+    if (!id) {
+      logger.error("No se encontró _id en la cotización:", row);
+      return;
+    }
+    if (!window.confirm("¿Estás seguro de que deseas cerrar este evento? Una vez cerrado, no se podrán registrar más pagos.")) {
+      return;
+    }
+    setClosingEventoId(id);
+    cerrarEventoCotizacion(id)
+      .then(() => {
+        alert("Evento cerrado exitosamente");
+        refetch();
+      })
+      .catch((err) => {
+        logger.error("Error al cerrar evento:", err);
+        const msg = err?.response?.data?.msg || err?.message || "No se pudo cerrar el evento";
+        alert(msg);
+      })
+      .finally(() => {
+        setClosingEventoId(null);
+      });
+  };
+
+  const handleConfirmarCancelacion = async (payload) => {
+    if (!cancelarEventoId) return;
+
+    if (!/^[a-f\d]{24}$/i.test(String(cancelarEventoId))) {
+      setCancelarEventoError("ID de cotización inválido. Recarga la página e intenta nuevamente.");
+      return;
+    }
+
+    setCancelandoEvento(true);
+    setCancelarEventoError("");
+    try {
+      await cancelarEventoCotizacion(cancelarEventoId, payload);
+      setCancelarEventoId(null);
+      refetch();
+    } catch (err) {
+      logger.error("Error al cancelar evento:", err);
+      const msg =
+        err?.response?.data?.message ||
+        err?.response?.data?.msg ||
+        err?.response?.data?.error ||
+        err?.message ||
+        "No se pudo cancelar el evento";
+      setCancelarEventoError(msg);
+    } finally {
+      setCancelandoEvento(false);
+    }
+  };
+
+  const toggleSort = (field) => {
+    if (!SORTABLE_COLUMNS[field]) return;
+    setPage(1);
+
+    if (sortBy !== field) {
+      setSortBy(field);
+      setSortOrder("asc");
+      return;
+    }
+
+    if (sortOrder === "asc") {
+      setSortOrder("desc");
+      return;
+    }
+
+    setSortBy("");
+    setSortOrder("");
+  };
+
+  const renderSortIcon = (field) => {
+    if (sortBy !== field) {
+      return <ArrowUpDown size={14} className="text-[#94A3B8]" />;
+    }
+
+    if (sortOrder === "asc") {
+      return <ArrowUp size={14} className="text-[#2563EB]" />;
+    }
+
+    return <ArrowDown size={14} className="text-[#2563EB]" />;
+  };
+
   const columns = useMemo(
     () => [
       {
-        header: "Folio",
-        accessorKey: "id",
+        header: () => (
+          <button type="button" className="inline-flex items-center gap-1" onClick={() => toggleSort("folio")}>
+            <span>Folio</span>
+            {renderSortIcon("folio")}
+          </button>
+        ),
+        accessorKey: "folio",
         cell: (i) => <span className="text-sm font-medium whitespace-nowrap text-[#111827]">{i.getValue()}</span>,
         meta: { className: "whitespace-nowrap w-20" },
       },
-      { 
-        header: "Evento / Cliente", 
+      {
+        header: () => (
+          <button type="button" className="inline-flex items-center gap-1" onClick={() => toggleSort("nombreEvento")}>
+            <span>Evento / Cliente</span>
+            {renderSortIcon("nombreEvento")}
+          </button>
+        ),
         accessorKey: "evento",
         cell: ({ row }) => (
           <div className="min-w-32">
@@ -158,14 +377,19 @@ export default function CotizacionesPage() {
         ),
         meta: { className: "min-w-32" },
       },
-      { 
-        header: "Inv.", 
+      {
+        header: "Inv.",
         accessorKey: "invitados",
         cell: (i) => <span className="text-sm text-[#111827]">{i.getValue()}</span>,
         meta: { className: "text-center w-10" },
       },
       {
-        header: "Fecha / Hora",
+        header: () => (
+          <button type="button" className="inline-flex items-center gap-1" onClick={() => toggleSort("fechaEvento")}>
+            <span>Fecha / Hora</span>
+            {renderSortIcon("fechaEvento")}
+          </button>
+        ),
         accessorKey: "fechaEvento",
         cell: ({ row }) => (
           <div className="text-sm whitespace-nowrap">
@@ -180,7 +404,12 @@ export default function CotizacionesPage() {
         meta: { className: "whitespace-nowrap w-20" },
       },
       {
-        header: "Total",
+        header: () => (
+          <button type="button" className="inline-flex items-center gap-1" onClick={() => toggleSort("total")}>
+            <span>Total</span>
+            {renderSortIcon("total")}
+          </button>
+        ),
         accessorKey: "total",
         cell: (i) => <span className="text-sm font-medium whitespace-nowrap text-right block text-[#111827]">${Number(i.getValue() || 0).toLocaleString()}</span>,
         meta: { className: "whitespace-nowrap text-right w-20" },
@@ -192,41 +421,81 @@ export default function CotizacionesPage() {
         meta: { className: "whitespace-nowrap text-right w-20" },
       },
       {
-        header: "Estado",
+        header: () => (
+          <button type="button" className="inline-flex items-center gap-1" onClick={() => toggleSort("estado")}>
+            <span>Estado</span>
+            {renderSortIcon("estado")}
+          </button>
+        ),
         accessorKey: "estado",
         cell: ({ row, getValue }) => {
-          const estado = getValue();
+          const estado = normalizeQuotationStatus(getValue());
+          const canEditEstado = estado !== "Contratado" && estado !== "Cancelado";
+          const eventoCerrado = row.original?.eventoCerrado === true;
+          // Solo mostrar estado operativo cuando el evento está cerrado (aporta información adicional)
+          // No mostrar "Evento activo" cuando ya dice "Contratado" (sería redundante)
+          const mostrarEstadoOperativo = estado === "Contratado" && eventoCerrado;
+          const estadoOperativoLabel = row.original?.estadoOperativoEvento || "Evento cerrado";
           return (
-            <div className="flex items-center gap-2">
-              <span className={`whitespace-nowrap px-4 py-1.5 rounded-full text-xs font-semibold ${getEstadoClass(estado)}`}>
-                {estado}
-              </span>
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  className="p-1 rounded-lg hover:bg-green-50 text-green-600 disabled:opacity-40 transition"
-                  onClick={() => updateEstado(row.original, "Contratado")}
-                  disabled={estado === "Contratado"}
-                  title="Marcar como contratado"
-                  aria-label="Marcar como contratado"
-                >
-                  <CheckCircle size={16} />
-                </button>
-                <button
-                  type="button"
-                  className="p-1 rounded-lg hover:bg-red-50 text-red-600 disabled:opacity-40 transition"
-                  onClick={() => updateEstado(row.original, "Cancelado")}
-                  disabled={estado === "Cancelado"}
-                  title="Marcar como cancelado"
-                  aria-label="Marcar como cancelado"
-                >
-                  <XCircle size={16} />
-                </button>
+            <div className="flex flex-col items-start gap-1.5">
+              <div className="flex items-center gap-2">
+                {canEditEstado ? (
+                  <select
+                    value={estado}
+                    onChange={(event) => updateEstado(row.original, event.target.value)}
+                    className={`whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-semibold border bg-white focus:outline-none focus:ring-2 focus:ring-[#2563EB] ${getEstadoClass(estado)}`}
+                    aria-label="Cambiar estado de cotización"
+                  >
+                    {ESTADOS_DROPDOWN.filter((option) => option !== "Contratado").map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className={`whitespace-nowrap px-4 py-1.5 rounded-full text-xs font-semibold ${getEstadoClass(estado)}`}>
+                    {estado}
+                  </span>
+                )}
+                {canEditEstado && (
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      className="p-1 rounded-lg hover:bg-green-50 text-green-600 disabled:opacity-40 transition"
+                      onClick={() => updateEstado(row.original, "Contratado")}
+                      disabled={estado === "Contratado"}
+                      title="Marcar como contratado"
+                      aria-label="Marcar como contratado"
+                    >
+                      <CheckCircle size={16} />
+                    </button>
+                  </div>
+                )}
+                {isAdmin && estado === "Contratado" && !eventoCerrado && row.original?.eventoCancelado !== true && (
+                  <button
+                    type="button"
+                    onClick={() => handleCerrarEvento(row.original)}
+                    disabled={closingEventoId === row.original?._id}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-600 transition hover:border-emerald-300 hover:bg-emerald-100 hover:text-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-200 disabled:cursor-not-allowed disabled:opacity-40"
+                    title="Cerrar evento"
+                    aria-label="Cerrar evento"
+                  >
+                    {closingEventoId === row.original?._id
+                      ? <Loader2 size={15} className="animate-spin" />
+                      : <CheckCheck size={15} />
+                    }
+                  </button>
+                )}
               </div>
+              {mostrarEstadoOperativo ? (
+                <span className={`whitespace-nowrap rounded-full border px-3 py-1 text-[11px] font-semibold ${getEstadoOperativoClass(eventoCerrado)}`}>
+                  {estadoOperativoLabel}
+                </span>
+              ) : null}
             </div>
           );
         },
-        meta: { className: "whitespace-nowrap w-40" },
+        meta: { className: "whitespace-nowrap w-48" },
       },
       {
         header: "Acciones",
@@ -236,16 +505,18 @@ export default function CotizacionesPage() {
             {row.original?.estado === "Contratado" && (
               <button
                 type="button"
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-green-50 text-green-700 hover:bg-green-100 border border-green-200 transition"
+                disabled={row.original?.eventoCerrado === true}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-green-50 text-green-700 hover:bg-green-100 border border-green-200 transition disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-green-50"
                 onClick={() => {
                   const id = row.original?._id;
-                  if (!id) return;
+                  if (!id || row.original?.eventoCerrado === true) return;
                   navigate(`/cotizaciones/${id}/pagos`);
                 }}
-                title="Registrar pago"
+                title={row.original?.eventoCerrado ? "El evento está cerrado" : "Registrar pago"}
                 aria-label="Registrar pago"
               >
                 <CreditCard size={14} />
+                <span className="sr-only">Registrar pago</span>
               </button>
             )}
             <div className="w-8">
@@ -290,7 +561,7 @@ export default function CotizacionesPage() {
                       alert(msg);
                     });
                 }}
-                onDelete={() => {
+                onDelete={allowDelete ? (() => {
                   const id = row.original?._id;
                   if (!id) {
                     logger.error("No se encontró _id en la cotización:", row.original);
@@ -303,8 +574,12 @@ export default function CotizacionesPage() {
 
                   deleteCotizacion(id)
                     .then(() => {
-                      // Remover de la lista local
-                      setData((prevData) => prevData.filter((item) => item._id !== id));
+                      const shouldGoBack = rows.length === 1 && page > 1;
+                      if (shouldGoBack) {
+                        setPage((current) => Math.max(1, current - 1));
+                      } else {
+                        refetch();
+                      }
                       alert("Cotización eliminada exitosamente");
                     })
                     .catch((err) => {
@@ -312,7 +587,7 @@ export default function CotizacionesPage() {
                       const msg = err?.response?.data?.msg || err?.message || "No se pudo eliminar la cotización";
                       alert(msg);
                     });
-                }}
+                }) : undefined}
                 onPdf={() => {
                   const id = row.original?._id;
                   if (!id) {
@@ -329,6 +604,29 @@ export default function CotizacionesPage() {
                       alert("No se pudo generar el PDF. Intenta nuevamente.");
                     });
                 }}
+                onCerrarEvento={
+                  isAdmin &&
+                  row.original?.estado === "Contratado" &&
+                  row.original?.eventoCerrado !== true &&
+                  row.original?.eventoCancelado !== true
+                    ? () => handleCerrarEvento(row.original)
+                    : undefined
+                }
+                onCancelarEvento={
+                  row.original?.estado === "Contratado" &&
+                  row.original?.eventoCancelado !== true &&
+                  row.original?.eventoCerrado !== true
+                    ? () => {
+                        const id = row.original?._id;
+                        if (!id) {
+                          logger.error("No se encontró _id en la cotización:", row.original);
+                          return;
+                        }
+                        setCancelarEventoError("");
+                        setCancelarEventoId(id);
+                      }
+                    : undefined
+                }
               />
             </div>
           </div>
@@ -336,39 +634,45 @@ export default function CotizacionesPage() {
         meta: { className: "w-16 text-right" },
       },
     ],
-    [navigate]
+    [navigate, allowDelete, isAdmin, page, refetch, rows.length, sortBy, sortOrder, closingEventoId]
   );
 
-  // Búsqueda por cliente (local, sobre data cargada)
-  const clientes = useMemo(() => [...new Set((data || []).map((e) => e.cliente))], [data]);
+  const table = useReactTable({ data: rows, columns, getCoreRowModel: getCoreRowModel() });
 
-  const handleBusqueda = (e) => {
-    const v = e.target.value;
-    setBusqueda(v);
-    setSugerencias(clientes.filter((c) => c.toLowerCase().includes(v.toLowerCase())).slice(0, 10));
+  const startItem = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const endItem = total === 0 ? 0 : Math.min(page * pageSize, total);
+  const hasActiveFilters = Boolean(debouncedSearchTerm || estado || clienteId || negocioId || fechaInicio || fechaFin || folio);
+
+  const handleApplyFilters = () => {
+    setEstado(normalizeTextFilter(draftFilters.estado));
+    setClienteId(normalizeTextFilter(draftFilters.clienteId));
+    setNegocioId(normalizeTextFilter(draftFilters.negocioId));
+    setFechaInicio(normalizeTextFilter(draftFilters.fechaInicio));
+    setFechaFin(normalizeTextFilter(draftFilters.fechaFin));
+    setFolio(normalizeTextFilter(draftFilters.folio));
+    setPage(1);
+    setFiltroOpen(false);
   };
 
-  // Filtrado local (MVP)
-  const filteredData = useMemo(() => {
-    if (!busqueda) return data;
-    const q = busqueda.toLowerCase();
-    return (data || []).filter((x) => (x.cliente || "").toLowerCase().includes(q));
-  }, [data, busqueda]);
-
-  // Paginación
-  const totalPaginas = Math.ceil(filteredData.length / registrosPorPagina);
-  const paginatedData = useMemo(() => {
-    const inicio = (paginaActual - 1) * registrosPorPagina;
-    const fin = inicio + registrosPorPagina;
-    return filteredData.slice(inicio, fin);
-  }, [filteredData, paginaActual]);
-
-  // Resetear página cuando cambia el filtro
-  useEffect(() => {
-    setPaginaActual(1);
-  }, [busqueda]);
-
-  const table = useReactTable({ data: paginatedData, columns, getCoreRowModel: getCoreRowModel() });
+  const handleClearFilters = () => {
+    const cleared = {
+      estado: "",
+      clienteId: "",
+      negocioId: "",
+      fechaInicio: "",
+      fechaFin: "",
+      folio: "",
+    };
+    setDraftFilters(cleared);
+    setEstado("");
+    setClienteId("");
+    setNegocioId("");
+    setFechaInicio("");
+    setFechaFin("");
+    setFolio("");
+    setClientSearch("");
+    setPage(1);
+  };
 
   return (
     <div className="p-5 h-screen flex flex-col overflow-hidden bg-[#F4F6F9]">
@@ -379,11 +683,11 @@ export default function CotizacionesPage() {
         >
           <Plus size={16} /> Nueva
         </button>
-        <button 
+        <button
           className="flex items-center gap-1.5 px-4 py-2 text-sm bg-[#2563EB] text-white rounded-lg hover:bg-[#1d4ed8] transition whitespace-nowrap shadow-sm"
           onClick={() => {
             try {
-              exportCotizacionesToExcel(filteredData);
+              exportCotizacionesToExcel(cotizaciones);
             } catch (err) {
               logger.error("Error exportando a Excel:", err);
               alert("No se pudo exportar a Excel. Intenta nuevamente.");
@@ -392,11 +696,11 @@ export default function CotizacionesPage() {
         >
           <FileDown size={16} /> Excel
         </button>
-        <button 
+        <button
           className="flex items-center gap-1.5 px-4 py-2 text-sm bg-[#2563EB] text-white rounded-lg hover:bg-[#1d4ed8] transition whitespace-nowrap shadow-sm"
           onClick={() => {
             try {
-              exportCotizacionesToPDF(filteredData);
+              exportCotizacionesToPDF(cotizaciones);
             } catch (err) {
               logger.error("Error exportando a PDF:", err);
               alert("No se pudo exportar a PDF. Intenta nuevamente.");
@@ -415,26 +719,10 @@ export default function CotizacionesPage() {
               <input
                 type="text"
                 className="w-full h-11 pl-12 pr-12 py-3 text-sm rounded-lg border border-gray-200 focus:ring-2 focus:ring-[#2563EB] focus:border-[#2563EB] text-[#111827] placeholder-[#64748B]"
-                placeholder="Buscar por cliente..."
-                value={busqueda}
-                onChange={handleBusqueda}
+                placeholder="Buscar por folio, cliente o evento..."
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
               />
-              {busqueda && sugerencias.length > 0 && (
-                <ul className="absolute left-0 right-0 mt-2 bg-white border border-gray-200 rounded-lg shadow-lg z-10 max-h-40 overflow-y-auto">
-                  {sugerencias.map((s) => (
-                    <li
-                      key={s}
-                      className="px-4 py-2.5 text-sm hover:bg-[#F9FAFB] cursor-pointer text-[#111827] transition"
-                      onClick={() => {
-                        setBusqueda(s);
-                        setSugerencias([]);
-                      }}
-                    >
-                      {s}
-                    </li>
-                  ))}
-                </ul>
-              )}
               <button className="absolute right-3 top-2.5 p-1.5 rounded-lg hover:bg-gray-100" onClick={() => setFiltroOpen(true)}>
                 <Filter size={18} />
               </button>
@@ -443,7 +731,18 @@ export default function CotizacionesPage() {
         </div>
 
         {loading && <div className="px-5 py-4 text-sm text-[#64748B] flex-shrink-0">Cargando cotizaciones...</div>}
-        {error && <div className="px-5 py-4 text-sm text-red-600 flex-shrink-0">{error}</div>}
+        {error && (
+          <div className="px-5 py-4 flex items-center justify-between gap-3 text-sm text-red-600 flex-shrink-0 bg-red-50 border-b border-red-100">
+            <span>{error}</span>
+            <button
+              type="button"
+              className="px-3 py-1.5 rounded-lg border border-red-200 hover:bg-white transition"
+              onClick={refetch}
+            >
+              Reintentar
+            </button>
+          </div>
+        )}
 
         <div className="flex-1 overflow-auto min-h-0">
           <table className="w-full text-sm bg-[#F9FAFB] border-collapse">
@@ -472,10 +771,10 @@ export default function CotizacionesPage() {
                 ))}
               </tr>
             ))}
-            {!loading && paginatedData.length === 0 && (
+            {!loading && rows.length === 0 && (
               <tr>
                 <td colSpan={columns.length} className="px-5 py-8 text-center text-[#64748B] bg-white">
-                  No hay cotizaciones para mostrar.
+                  {hasActiveFilters ? "No se encontraron cotizaciones con los filtros actuales." : "No hay cotizaciones para mostrar."}
                 </td>
               </tr>
             )}
@@ -484,64 +783,96 @@ export default function CotizacionesPage() {
         </div>
 
         <div className="px-5 py-4 border-t border-gray-100 bg-[#F9FAFB] flex-shrink-0">
-          <div className="flex items-center justify-between flex-wrap gap-2 text-sm">
+          <div className="flex items-center justify-between flex-wrap gap-3 text-sm">
             <div className="text-[#64748B]">
-              {paginatedData.length > 0 ? (paginaActual - 1) * registrosPorPagina + 1 : 0}-{Math.min(paginaActual * registrosPorPagina, filteredData.length)} de {filteredData.length}
+              {startItem}-{endItem} de {total}
             </div>
-            
-            {totalPaginas > 1 && (
+
+            <div className="flex items-center gap-3 ml-auto">
+              <label className="flex items-center gap-2 text-[#64748B]">
+                <span>Filas por página:</span>
+                <select
+                  value={pageSize}
+                  onChange={(event) => {
+                    setPageSize(Number(event.target.value));
+                    setPage(1);
+                  }}
+                  className="h-9 rounded-lg border border-gray-200 bg-white px-3 text-sm text-[#111827]"
+                >
+                  {PAGE_SIZE_OPTIONS.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+            {totalPages > 1 && (
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => setPaginaActual(p => Math.max(1, p - 1))}
-                  disabled={paginaActual === 1}
+                  onClick={() => setPage((current) => Math.max(1, current - 1))}
+                  disabled={!hasPrevPage}
                   className="px-3 py-2 text-sm border border-gray-200 rounded-lg hover:bg-white disabled:opacity-50 disabled:cursor-not-allowed transition text-[#64748B]"
                 >
                   ◀
                 </button>
-                
+
                 <div className="flex items-center gap-1">
-                  {Array.from({ length: totalPaginas }, (_, i) => i + 1).map((pagina) => {
-                    const mostrar = pagina === 1 || 
-                                    pagina === totalPaginas || 
-                                    Math.abs(pagina - paginaActual) <= 1;
-                    
-                    if (!mostrar) {
-                      if (pagina === paginaActual - 2 || pagina === paginaActual + 2) {
-                        return <span key={pagina} className="px-2 text-[#64748B]">...</span>;
+                  {Array.from({ length: totalPages }, (_, i) => i + 1).map((currentPage) => {
+                    const showPage = currentPage === 1 ||
+                                    currentPage === totalPages ||
+                                    Math.abs(currentPage - page) <= 1;
+
+                    if (!showPage) {
+                      if (currentPage === page - 2 || currentPage === page + 2) {
+                        return <span key={currentPage} className="px-2 text-[#64748B]">...</span>;
                       }
                       return null;
                     }
-                    
+
                     return (
                       <button
-                        key={pagina}
-                        onClick={() => setPaginaActual(pagina)}
+                        key={currentPage}
+                        onClick={() => setPage(currentPage)}
                         className={`px-3 py-2 text-sm border rounded-lg transition ${
-                          paginaActual === pagina
+                          page === currentPage
                             ? "bg-[#2563EB] text-white border-[#2563EB]"
                             : "border-gray-200 hover:bg-white text-[#64748B]"
                         }`}
                       >
-                        {pagina}
+                        {currentPage}
                       </button>
                     );
                   })}
                 </div>
-                
+
                 <button
-                  onClick={() => setPaginaActual(p => Math.min(totalPaginas, p + 1))}
-                  disabled={paginaActual === totalPaginas}
+                  onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+                  disabled={!hasNextPage}
                   className="px-3 py-2 text-sm border border-gray-200 rounded-lg hover:bg-white disabled:opacity-50 disabled:cursor-not-allowed transition text-[#64748B]"
                 >
                   ▶
                 </button>
               </div>
             )}
+            </div>
           </div>
         </div>
       </div>
 
-      {/* Panel de filtros (UI, todavía sin lógica real) */}
+      <CancelarEventoModal
+        open={Boolean(cancelarEventoId)}
+        onClose={() => {
+          if (!cancelandoEvento) {
+            setCancelarEventoId(null);
+            setCancelarEventoError("");
+          }
+        }}
+        onConfirm={handleConfirmarCancelacion}
+        loading={cancelandoEvento}
+        error={cancelarEventoError}
+      />
+
       <Transition show={filtroOpen} as={Fragment}>
         <Dialog as="div" className="relative z-50" onClose={setFiltroOpen}>
           <div className="fixed inset-0 bg-black/30" />
@@ -554,19 +885,98 @@ export default function CotizacionesPage() {
                 </button>
               </div>
               <div className="mb-4">
-                <label className="block text-sm font-medium mb-1">Rango de fechas</label>
-                <input type="date" className="border rounded px-3 py-2 w-full mb-2" />
-                <input type="date" className="border rounded px-3 py-2 w-full" />
+                <label className="block text-sm font-medium mb-1">Estado</label>
+                <select
+                  value={draftFilters.estado}
+                  onChange={(event) => setDraftFilters((current) => ({ ...current, estado: event.target.value }))}
+                  className="border rounded px-3 py-2 w-full"
+                >
+                  <option value="">Todos</option>
+                  {ESTADOS_DROPDOWN.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div className="mb-4">
-                <label className="block text-sm font-medium mb-1">Cliente</label>
-                <input type="text" className="border rounded px-3 py-2 w-full" />
+                <label className="block text-sm font-medium mb-1">Rango de fechas</label>
+                <input
+                  type="date"
+                  value={draftFilters.fechaInicio}
+                  onChange={(event) => setDraftFilters((current) => ({ ...current, fechaInicio: event.target.value }))}
+                  className="border rounded px-3 py-2 w-full mb-2"
+                />
+                <input
+                  type="date"
+                  value={draftFilters.fechaFin}
+                  onChange={(event) => setDraftFilters((current) => ({ ...current, fechaFin: event.target.value }))}
+                  className="border rounded px-3 py-2 w-full"
+                />
+              </div>
+              <div className="mb-4">
+                <label className="block text-sm font-medium mb-1">Buscar cliente</label>
+                <input
+                  type="text"
+                  value={clientSearch}
+                  onChange={(event) => setClientSearch(event.target.value)}
+                  placeholder="Escribe para filtrar clientes"
+                  className="border rounded px-3 py-2 w-full mb-2"
+                />
+                <select
+                  value={draftFilters.clienteId}
+                  onChange={(event) => setDraftFilters((current) => ({ ...current, clienteId: event.target.value }))}
+                  className="border rounded px-3 py-2 w-full"
+                >
+                  <option value="">Todos los clientes</option>
+                  {clientOptions.map((client) => (
+                    <option key={client._id} value={client._id}>
+                      {client.nombre}
+                    </option>
+                  ))}
+                </select>
+                {clientOptionsLoading && <p className="mt-2 text-xs text-[#64748B]">Cargando clientes...</p>}
+              </div>
+              <div className="mb-4">
+                <label className="block text-sm font-medium mb-1">Negocio</label>
+                <select
+                  value={draftFilters.negocioId}
+                  onChange={(event) => setDraftFilters((current) => ({ ...current, negocioId: event.target.value }))}
+                  className="border rounded px-3 py-2 w-full"
+                >
+                  <option value="">Todos los negocios</option>
+                  {negocios.map((negocio) => (
+                    <option key={negocio._id} value={negocio._id}>
+                      {negocio.nombre}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div className="mb-4">
                 <label className="block text-sm font-medium mb-1">No. Cotización</label>
-                <input type="text" className="border rounded px-3 py-2 w-full" />
+                <input
+                  type="text"
+                  value={draftFilters.folio}
+                  onChange={(event) => setDraftFilters((current) => ({ ...current, folio: event.target.value }))}
+                  className="border rounded px-3 py-2 w-full"
+                />
               </div>
-              <button className="w-full bg-[#2563eb] text-white py-2 rounded hover:bg-[#1d4ed8]">Aplicar filtros</button>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  className="w-full border border-gray-200 text-[#111827] py-2 rounded hover:bg-[#F8FAFC]"
+                  onClick={handleClearFilters}
+                >
+                  Limpiar
+                </button>
+                <button
+                  type="button"
+                  className="w-full bg-[#2563eb] text-white py-2 rounded hover:bg-[#1d4ed8]"
+                  onClick={handleApplyFilters}
+                >
+                  Aplicar filtros
+                </button>
+              </div>
             </Dialog.Panel>
           </div>
         </Dialog>

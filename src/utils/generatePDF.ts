@@ -3,6 +3,8 @@
 
 import { getConfig } from "../services/configService";
 import { getEmpresa } from "../services/empresaService";
+import { normalizeQuotationStatus } from "../constants/quotationStatus";
+import { addDaysToDateOnly, formatDateOnly } from "./dateOnly";
 
 export async function generateCotizacionPDF(
   cotizacion: any,
@@ -25,20 +27,14 @@ export async function generateCotizacionPDF(
     if (Number.isNaN(d.getTime())) return '-';
     return withTime ? d.toLocaleString('es-MX', { day: '2-digit', month: '2-digit', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : d.toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit', year: 'numeric' });
   };
-  const formatDateLong = (v: any) => {
-    if (!v) return '-';
-    const d = new Date(v);
-    if (Number.isNaN(d.getTime())) return '-';
-    return d.toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' });
+  const formatEventDate = (v: any) => formatDateOnly(v, 'es-MX', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  const formatEventDateLong = (v: any) => formatDateOnly(v, 'es-MX', { day: 'numeric', month: 'long', year: 'numeric' });
+  const formatMultilineText = (v: any) => {
+    if (typeof v !== 'string') return '';
+    const trimmed = v.trim();
+    if (!trimmed) return '';
+    return esc(trimmed).replace(/\r?\n/g, '<br/>');
   };
-  const addDaysToDate = (v: any, daysToAdd: number) => {
-    if (!v) return null;
-    const d = new Date(v);
-    if (Number.isNaN(d.getTime())) return null;
-    d.setDate(d.getDate() + Math.max(0, Math.floor(Number(daysToAdd) || 0)));
-    return d;
-  };
-
   const getConceptoBadge = (item: any) => {
     const tipoRaw = String(item?.tipo || "").trim();
     const catalogoRaw = String(item?.catalogoTipo || item?.catalogo || "").trim();
@@ -191,7 +187,7 @@ export async function generateCotizacionPDF(
     ?? cotizacion?.subtotal
   );
   const backendTaxAmount = toNumberOrNull(breakdown?.ivaMonto ?? cotizacion?.ivaMonto) ?? 0;
-  const backendTotalAmount = toNumberOrNull(breakdown?.total ?? cotizacion?.total) ?? 0;
+  const backendTotalAmount = toNumberOrNull(cotizacion?.total ?? breakdown?.total) ?? 0;
   const backendIvaPct = toNumberOrNull(
     cotizacion?.ivaPct
     ?? cotizacion?.ivaPorcentaje
@@ -202,6 +198,10 @@ export async function generateCotizacionPDF(
   );
   const ivaPctForLabel = backendIvaPct ?? 16;
 
+  const backendDiscountAmount = toNumberOrNull(
+    breakdown?.descuentoTotal ?? cotizacion?.descuentoTotal ?? cotizacion?.descuentoMonto ?? cotizacion?.descuentoValor
+  ) ?? 0;
+
   const pdfTotals = {
     subtotalLabel: "Subtotal",
     subtotalValue: backendDurationDays > 1
@@ -210,15 +210,29 @@ export async function generateCotizacionPDF(
     subtotalByDaysLabel: `Subtotal x ${backendDurationDays} días de evento`,
     subtotalByDaysValue: backendSubtotalByDays ?? 0,
     taxValue: backendTaxAmount,
+    discountValue: backendDiscountAmount,
     totalValue: backendTotalAmount,
   };
   const eventDaysForDisplay = backendDurationDays > 0 ? backendDurationDays : eventDurationDays;
   const eventStartDate = cotizacion?.eventStartDate || cotizacion?.fechaEvento;
-  const computedEventEndDate = addDaysToDate(eventStartDate, eventDaysForDisplay - 1);
+  const computedEventEndDate = addDaysToDateOnly(eventStartDate, eventDaysForDisplay - 1);
   const eventEndDate = cotizacion?.eventEndDate || computedEventEndDate;
   const eventDateDisplay = eventDaysForDisplay > 1
-    ? `del ${formatDateLong(eventStartDate)} al ${formatDateLong(eventEndDate)}`
-    : formatDate(cotizacion?.fechaEvento || eventStartDate);
+    ? `del ${formatEventDateLong(eventStartDate)} al ${formatEventDateLong(eventEndDate)}`
+    : formatEventDate(cotizacion?.fechaEvento || eventStartDate);
+
+  const quotationStatus = normalizeQuotationStatus(
+    String(cotizacion?.estado || cotizacion?.status || "Cotizado")
+  );
+  const observacionesClienteHtml = formatMultilineText(cotizacion?.observaciones);
+  const statusBadgeStyles: Record<string, string> = {
+    Cotizado: "background:#fef3c7;color:#92400e;border-color:#fcd34d",
+    "En revision": "background:#dbeafe;color:#1e3a8a;border-color:#93c5fd",
+    "No aceptada": "background:#ffe4e6;color:#9f1239;border-color:#fda4af",
+    Contratado: "background:#d1fae5;color:#065f46;border-color:#6ee7b7",
+  };
+  const statusBadgeStyle =
+    statusBadgeStyles[quotationStatus] || statusBadgeStyles.Cotizado;
 
   const condicionesItems = [
     "<strong>Vigencia:</strong> La presente cotización es válida por <strong>5 (cinco) días naturales</strong> a partir de su fecha de emisión y está sujeta a disponibilidad de equipo y servicios al momento de confirmar.",
@@ -259,7 +273,7 @@ export async function generateCotizacionPDF(
           <div class="kv"><div class="k">Folio</div><div class="v">${esc(cotizacion?.folio || "")}</div></div>
           <div class="kv"><div class="k">Fecha de emisión</div><div class="v">${formatDate(new Date(), true)}</div></div>
           <div class="kv"><div class="k">Vigencia</div><div class="v"><span class="badge" style="background:#e0f2fe;color:#075985;border-color:#7dd3fc">5 días</span></div></div>
-          <div class="kv"><div class="k">Estatus</div><div class="v"><span class="badge" style="background:#d1fae5;color:#065f46;border-color:#6ee7b7">Contratado</span></div></div>
+          <div class="kv"><div class="k">Estatus</div><div class="v"><span class="badge" style="${statusBadgeStyle}">${esc(quotationStatus)}</span></div></div>
         </div>
       </div>
       <div class="row-cards">
@@ -305,7 +319,8 @@ export async function generateCotizacionPDF(
           }).join('')}
         </tbody>
       </table>
-      ${isLast ? `<div class="totales"><div class="resumen-row"><span>${pdfTotals.subtotalLabel}</span><strong>${formatCurrency(pdfTotals.subtotalValue)}</strong></div>${backendDurationDays > 1 ? `<div class="resumen-row"><span>${pdfTotals.subtotalByDaysLabel}</span><strong>${formatCurrency(pdfTotals.subtotalByDaysValue)}</strong></div>` : ''}<div class="resumen-row"><span>IVA (${esc(ivaPctForLabel)}%)</span><strong>${formatCurrency(pdfTotals.taxValue)}</strong></div><div class="resumen-total"><div class="label">TOTAL</div><div class="value">${formatCurrency(pdfTotals.totalValue)}</div></div></div>` : ''}
+      ${isLast && observacionesClienteHtml ? `<div class="observaciones-cliente"><div class="observaciones-cliente__title">Observaciones para el cliente</div><div class="observaciones-cliente__body">${observacionesClienteHtml}</div></div>` : ''}
+      ${isLast ? `<div class="totales"><div class="resumen-row"><span>${pdfTotals.subtotalLabel}</span><strong>${formatCurrency(pdfTotals.subtotalValue)}</strong></div>${backendDurationDays > 1 ? `<div class="resumen-row"><span>${pdfTotals.subtotalByDaysLabel}</span><strong>${formatCurrency(pdfTotals.subtotalByDaysValue)}</strong></div>` : ''}${pdfTotals.discountValue && Number(pdfTotals.discountValue) !== 0 ? `<div class="resumen-row"><span>Descuento</span><strong style="color:#9ca3af">-${formatCurrency(Math.abs(pdfTotals.discountValue))}</strong></div>` : ''}<div class="resumen-row"><span>IVA (${esc(ivaPctForLabel)}%)</span><strong>${formatCurrency(pdfTotals.taxValue)}</strong></div><div class="resumen-total"><div class="label">TOTAL</div><div class="value">${formatCurrency(pdfTotals.totalValue)}</div></div></div>` : ''}
       <div class="bottom-stack ${isLast ? 'bottom-stack--last' : ''}">
         ${isLast ? `${condicionesHtml}${firmaHtml}` : ''}
       </div>
@@ -352,6 +367,9 @@ export async function generateCotizacionPDF(
     td.center, th.center { text-align: center; }
     .chip { display: inline-block; padding: 2px 5px; border-radius: 4px; font-size: 8px; font-weight: 700; letter-spacing: 0.02em; border: 1px solid; }
     .item-nombre { max-width: 200px; display: inline-block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
+    .observaciones-cliente { margin-top: 8px; border: 1px solid #e5e7eb; border-radius: 10px; padding: 8px 10px; background: #ffffff; break-inside: avoid; page-break-inside: avoid; }
+    .observaciones-cliente__title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: #475569; margin-bottom: 4px; }
+    .observaciones-cliente__body { font-size: 10px; color: #111827; line-height: 1.45; white-space: normal; word-break: normal; overflow-wrap: anywhere; }
     .totales { margin-top: 7px; margin-left: auto; width: 300px; border: 1px solid #dbe3ef; border-radius: 12px; padding: 8px; background: #f8fafc; }
     .resumen-row { display: flex; justify-content: space-between; margin: 3px 0; font-size: 10px; }
     .resumen-row strong { font-size: 11px; font-weight: 600; }

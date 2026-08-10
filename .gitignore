@@ -1,4 +1,4 @@
-# Logs
+﻿# Logs
 logs
 *.log
 npm-debug.log*
@@ -30,3 +30,21 @@ node_modules
 dist
 .vite
 .DS_Store
+tmp_smoke_artifacts/
+
+# Deploy artifacts
+*.zip
+
+# Temporary scripts and diagnostic artifacts
+tmp_*.ps1
+tmp_*.json
+tmp_*.txt
+
+# Local development environment
+.env.development
+
+# Generated QA artifacts
+scripts/qa-archive/
+
+# Generated starfield artifact
+src/styles/stars-generated.css

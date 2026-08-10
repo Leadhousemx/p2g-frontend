@@ -89,8 +89,8 @@ export const Select = forwardRef(function Select(
     >
       {placeholder !== undefined && <option value="">{placeholder}</option>}
       {items.length > 0
-        ? items.map((it) => (
-            <option key={String(it.value)} value={it.value}>
+        ? items.map((it, idx) => (
+            <option key={`opt-${idx}`} value={it.value}>
               {it.label}
             </option>
           ))

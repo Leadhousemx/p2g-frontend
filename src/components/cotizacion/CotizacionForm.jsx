@@ -1,4 +1,4 @@
-import { useForm, FormProvider } from "react-hook-form";
+﻿import { useForm, FormProvider, useFieldArray } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useEffect, useState, useRef, Fragment } from "react";
@@ -10,6 +10,8 @@ import NuevoCatalogoForm from "../catalogo/NuevoCatalogoForm";
 import ItemsTable from "./ItemsTable";
 import ResumenCostos from "./ResumenCostos";
 import ClienteBuscarCrear from "./ClienteBuscarCrear";
+import FormSection from "../common/forms/FormSection";
+import FieldGrid from "../common/forms/FieldGrid";
 import {
   Input,
   Label,
@@ -30,8 +32,10 @@ import { listCatalogo, createCatalogoItem } from "../../services/catalogoService
 import { createCliente } from "../../services/clientesService";
 import { useNegocios } from "../../hooks/useNegocios";
 import { generateCotizacionPDF } from "../../utils/generatePDF";
+import { extractDateOnly, parseDateOnlyAsLocalDate, toLocalDateOnly } from "../../utils/dateOnly";
 import { preventEnterFormSubmit } from "../../utils/formGuards";
 import { logger } from "../../lib/logger";
+import { buildClienteMedioPayload, clienteMedioSchemaFields, refineClienteMedio } from "../clientes/clienteMedio";
 // Zod schema
 const itemSchema = z.object({
   tipo: z.string().min(1, "Tipo requerido"),
@@ -61,7 +65,7 @@ const schema = z.object({
     apellido: z.string().optional().default(""),
     telefono: z.string().min(1, "Teléfono requerido"),
     email: z.string().email("Email requerido"),
-    medio: z.string().optional(),
+    ...clienteMedioSchemaFields,
     fechaNacimiento: z.string().optional(),
   }),
   items: z.preprocess(
@@ -83,9 +87,9 @@ const schema = z.object({
   descuentoTipo: z.enum(["porcentaje", "monto"]).optional().default("monto"),
   descuento: z.number().min(0).optional().default(0),
   anticipo: z.number().min(0).optional().default(0),
-  estado: z.enum(["Cotizado", "Contratado"]).optional().default("Cotizado"),
+  estado: z.enum(["Cotizado", "En revision", "No aceptada", "Contratado", "Cancelado"]).optional().default("Cotizado"),
   notas: z.string().optional().default(""),
-});
+}).superRefine((data, ctx) => refineClienteMedio(data?.cliente, ctx, ["cliente"]));
 
 // Crear la fecha por defecto una sola vez
 const todayDate = new Date();
@@ -105,7 +109,7 @@ const defaultValues = {
   invitadosAdultos: 0,
   invitadosNinos: 0,
   direccion: "",
-  cliente: { nombre: "", apellido: "", telefono: "", email: "", medio: "", fechaNacimiento: "" },
+  cliente: { nombre: "", apellido: "", telefono: "", email: "", medio: "", medioOtros: "", fechaNacimiento: "" },
   items: [],
   incluyeIva: false,
   ivaPorcentaje: 16,
@@ -120,22 +124,18 @@ function isValidDate(d) {
   return d instanceof Date && !Number.isNaN(d.getTime());
 }
 
-function buildFechaEventoISO(fechaEvento, horaInicio) {
-  if (!isValidDate(fechaEvento)) return "";
-  const [hh, mm] = String(horaInicio || "").split(":").map(Number);
-  const date = new Date(fechaEvento);
-  if (Number.isFinite(hh) && Number.isFinite(mm)) {
-    date.setHours(hh, mm, 0, 0);
-  } else {
-    date.setHours(0, 0, 0, 0);
-  }
-  return date.toISOString();
+function buildFechaEventoValue(fechaEvento) {
+  return extractDateOnly(fechaEvento);
 }
 
 function clampDurationDays(value) {
   const num = Number(value);
   if (!Number.isFinite(num)) return 1;
   return Math.max(1, Math.trunc(num));
+}
+
+function resolveInitialIncluyeIva(source) {
+  return source?.incluyeIva === true || source?.ivaIncluido === true;
 }
 
 function resolveInitialIvaPorcentaje(source) {
@@ -181,6 +181,18 @@ function mapCatalogoTipoToItemTipo(catalogoTipo) {
   return "Extra";
 }
 
+function resolveCreatedCatalogItem(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  if (payload.nombre !== undefined || payload.precio !== undefined) return payload;
+  if (payload.item && typeof payload.item === "object") return payload.item;
+  if (payload.data && typeof payload.data === "object") {
+    if (payload.data.item && typeof payload.data.item === "object") return payload.data.item;
+    return payload.data;
+  }
+  if (payload.result && typeof payload.result === "object") return payload.result;
+  return null;
+}
+
 function getEntityId(value) {
   if (typeof value === "string") return value;
   if (value && typeof value === "object") {
@@ -191,6 +203,34 @@ function getEntityId(value) {
   return "";
 }
 
+function normalizeBackendBreakdown(source) {
+  if (!source || typeof source !== "object") return null;
+
+  const rawBreakdown = source?.breakdown && typeof source.breakdown === "object"
+    ? source.breakdown
+    : source;
+
+  if (!rawBreakdown || typeof rawBreakdown !== "object") return null;
+
+  const toNum = (value) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+
+  return {
+    ...rawBreakdown,
+    subtotalFinal: toNum(
+      source?.subtotal ??
+      rawBreakdown?.subtotalFinal ??
+      rawBreakdown?.subtotalByDays ??
+      rawBreakdown?.subtotalOneDay
+    ),
+    descuentoTotal: toNum(source?.descuentoTotal ?? rawBreakdown?.descuentoTotal),
+    ivaMonto: toNum(source?.ivaMonto ?? rawBreakdown?.ivaMonto),
+    total: toNum(source?.total ?? rawBreakdown?.total),
+  };
+}
+
 export default function CotizacionForm() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -198,6 +238,10 @@ export default function CotizacionForm() {
     resolver: zodResolver(schema),
     defaultValues,
     mode: "onChange",
+  });
+  const { fields, append, remove, replace } = useFieldArray({
+    control: methods.control,
+    name: "items",
   });
 
   const { handleSubmit, watch, setValue, formState } = methods;
@@ -208,20 +252,22 @@ export default function CotizacionForm() {
   const [paquetes, setPaquetes] = useState([]);
   const [paquetesLoading, setPaquetesLoading] = useState(true);
   const [isDuplicate, setIsDuplicate] = useState(false);
+  const duplicateInitialIvaPctRef = useRef(null);
   const [backendBreakdown, setBackendBreakdown] = useState(null);
   const [previewUnavailable, setPreviewUnavailable] = useState(false);
   // Modal for new catalog item
   const [modalNuevoCatalogoOpen, setModalNuevoCatalogoOpen] = useState(false);
   const [nuevoCatalogoTipo, setNuevoCatalogoTipo] = useState("");
   const [catalogRefreshKey, setCatalogRefreshKey] = useState(0);
+  const [recentCatalogItem, setRecentCatalogItem] = useState(null);
   const [duplicateNegocioInfo, setDuplicateNegocioInfo] = useState(null);
-  
+
   // Ref para almacenar el tipo de descuento anterior
   const prevDescuentoTipoRef = useRef(null);
-  
+
   // Hook para cargar negocios
   const { negocios = [], loading: negociosLoading, error: negociosError } = useNegocios();
-  
+
   // Estados para tipos de evento
   const [tiposEvento, setTiposEvento] = useState([]);
   const [modalTipoEventoOpen, setModalTipoEventoOpen] = useState(false);
@@ -257,16 +303,16 @@ export default function CotizacionForm() {
       prevDescuentoTipoRef.current = descuentoTipo;
       return;
     }
-    
+
     // Si el tipo no cambió, solo actualizar ref y salir
     if (prevDescuentoTipoRef.current === descuentoTipo) {
       return;
     }
-    
+
     // El tipo cambió, hacer la conversión
     const currentValor = methods.getValues("descuento") || 0;
     const prevTipo = prevDescuentoTipoRef.current;
-    
+
     const subtotalForConversion = Number(backendBreakdown?.subtotalFinal ?? backendBreakdown?.subtotalByDays ?? backendBreakdown?.subtotalOneDay ?? 0);
     if (subtotalForConversion > 0 && currentValor > 0) {
       if (prevTipo === "porcentaje" && descuentoTipo === "monto") {
@@ -279,7 +325,7 @@ export default function CotizacionForm() {
         methods.setValue("descuento", Math.round(nuevoPorcentaje * 100) / 100);
       }
     }
-    
+
     // Actualizar el ref con el tipo actual
     prevDescuentoTipoRef.current = descuentoTipo;
   }, [descuentoTipo, methods, backendBreakdown]);
@@ -289,6 +335,7 @@ export default function CotizacionForm() {
     if (location.state?.isDuplicate && location.state?.duplicatedFrom) {
       const cotizacionOriginal = location.state.duplicatedFrom;
       setIsDuplicate(true);
+      duplicateInitialIvaPctRef.current = resolveInitialIvaPorcentaje(cotizacionOriginal);
 
       const negocioIdOriginal =
         getEntityId(cotizacionOriginal?.negocioId) ||
@@ -316,13 +363,13 @@ export default function CotizacionForm() {
         nombre: negocioNombreOriginal,
         tipo: negocioTipoOriginal,
       });
-      
+
       // Pre-llenar formulario con datos de la cotización duplicada
       const dataParaDuplicar = {
         clienteId: getEntityId(cotizacionOriginal?.clienteId) || getEntityId(cotizacionOriginal?.cliente) || "",
         tipoEvento: cotizacionOriginal?.tipoEvento || "",
         nombreEvento: cotizacionOriginal?.nombreEvento || "",
-        fechaEvento: cotizacionOriginal?.fechaEvento ? new Date(cotizacionOriginal.fechaEvento) : new Date(),
+        fechaEvento: parseDateOnlyAsLocalDate(cotizacionOriginal?.eventStartDate || cotizacionOriginal?.fechaEvento) || new Date(),
         eventDurationDays: clampDurationDays(
           cotizacionOriginal?.eventDurationDays ?? cotizacionOriginal?.breakdown?.numberOfDays ?? 1
         ),
@@ -333,28 +380,44 @@ export default function CotizacionForm() {
         invitadosAdultos: cotizacionOriginal?.invitadosAdultos || 0,
         invitadosNinos: cotizacionOriginal?.invitadosNinos || 0,
         direccion: cotizacionOriginal?.direccion || "",
-        cliente: cotizacionOriginal?.cliente || { nombre: "", telefono: "", email: "", medio: "", fechaNacimiento: "" },
+        cliente: cotizacionOriginal?.cliente || { nombre: "", telefono: "", email: "", medio: "", medioOtros: "", fechaNacimiento: "" },
         items: (cotizacionOriginal?.items || []).map((item) => ({
           ...item,
           applyDurationMultiplier: item?.applyDurationMultiplier !== false,
         })),
-        incluyeIva: resolveInitialIvaPorcentaje(cotizacionOriginal) === 0 ? true : Boolean(cotizacionOriginal?.incluyeIva || false),
+        incluyeIva: resolveInitialIncluyeIva(cotizacionOriginal),
         ivaPorcentaje: resolveInitialIvaPorcentaje(cotizacionOriginal),
         descuentoTipo: cotizacionOriginal?.descuentoTipo || "monto",
         descuento: cotizacionOriginal?.descuento || 0,
         anticipo: cotizacionOriginal?.anticipo || 0,
         notas: cotizacionOriginal?.notas || "",
       };
-      
-      // Aplicar todos los valores al formulario
-      Object.keys(dataParaDuplicar).forEach((key) => {
-        setValue(key, dataParaDuplicar[key]);
+
+      const { items: duplicatedItems = [], ...duplicatedFields } = dataParaDuplicar;
+
+      Object.keys(duplicatedFields).forEach((key) => {
+        setValue(key, duplicatedFields[key]);
       });
-      
+
+      replace(duplicatedItems);
+
       // Limpiar el state para evitar duplicaciones accidentales
       window.history.replaceState({}, document.title, window.location.pathname);
     }
-  }, [location.state, setValue]);
+  }, [location.state, replace, setValue]);
+
+  useEffect(() => {
+    if (!isDuplicate) return;
+    if (duplicateInitialIvaPctRef.current !== 0) return;
+    if (safeIvaPorcentaje <= 0) return;
+    if (!incluyeIva) return;
+
+    setValue("incluyeIva", false, {
+      shouldDirty: true,
+      shouldTouch: true,
+      shouldValidate: true,
+    });
+  }, [incluyeIva, isDuplicate, safeIvaPorcentaje, setValue]);
 
   useEffect(() => {
     const negocioId = String(duplicateNegocioInfo?.id || "").trim();
@@ -398,7 +461,7 @@ export default function CotizacionForm() {
       alert("Por favor, ingresa un nombre para el tipo de evento");
       return;
     }
-    
+
     setSavingTipoEvento(true);
     try {
       await createCatalogoItem("tipoeventos", { nombre: nuevoTipoEvento.trim() });
@@ -421,13 +484,13 @@ export default function CotizacionForm() {
     }
 
     const ivaPctForPayload = Math.max(0, safeIvaPorcentaje);
-    const incluyeIvaForPayload = ivaPctForPayload === 0 ? true : Boolean(incluyeIva);
+    const incluyeIvaForPayload = Boolean(incluyeIva);
 
     const payload = {
       tipoEvento: tipoEvento || "",
       nombreEvento: methods.getValues("nombreEvento") || "",
-      fechaEvento: buildFechaEventoISO(methods.getValues("fechaEvento"), methods.getValues("horaInicio")),
-      eventStartDate: buildFechaEventoISO(methods.getValues("fechaEvento"), methods.getValues("horaInicio")),
+      fechaEvento: buildFechaEventoValue(methods.getValues("fechaEvento")),
+      eventStartDate: buildFechaEventoValue(methods.getValues("fechaEvento")),
       eventDurationDays: clampDurationDays(methods.getValues("eventDurationDays")),
       horaInicio: methods.getValues("horaInicio") || "",
       horaFin: methods.getValues("horaFin") || "",
@@ -462,7 +525,7 @@ export default function CotizacionForm() {
           setPreviewUnavailable(true);
           return;
         }
-        setBackendBreakdown(preview?.breakdown || null);
+        setBackendBreakdown(normalizeBackendBreakdown(preview));
       } catch (err) {
         logger.warn("No se pudo obtener preview de cotización", err);
       }
@@ -524,23 +587,19 @@ export default function CotizacionForm() {
           applyDurationMultiplier: true,
         }));
 
-        setValue("items", mapped, {
-          shouldDirty: true,
-          shouldTouch: true,
-          shouldValidate: true,
-        });
+        replace(mapped);
 
         // Cargar el descuento del paquete si existe
         if (paquete?.descuentoTipo && paquete?.descuentoValor !== undefined && paquete?.descuentoValor !== null) {
           const descuentoValor = Number(paquete.descuentoValor);
-          
+
           // Cargar el tipo de descuento del paquete
           setValue("descuentoTipo", paquete.descuentoTipo, {
             shouldDirty: true,
             shouldTouch: true,
             shouldValidate: true,
           });
-          
+
           // Cargar el valor del descuento
           setValue("descuento", descuentoValor, {
             shouldDirty: true,
@@ -556,11 +615,11 @@ export default function CotizacionForm() {
     return () => {
       active = false;
     };
-  }, [paqueteId, setValue]);
+  }, [paqueteId, replace, setValue]);
 
   const onSubmit = async (data) => {
     const currentActionType = actionTypeRef.current || actionType;
-    
+
     setSaving(true);
     try {
       const cleanedItems = Array.isArray(data.items)
@@ -596,13 +655,12 @@ export default function CotizacionForm() {
             ...(data.cliente.apellido && { apellidos: data.cliente.apellido }),
             ...(data.cliente.telefono && { telefono: data.cliente.telefono }),
             ...(data.cliente.email && { email: data.cliente.email }),
-            medio: "Referencia",
-            medioOtros: "",
+            ...buildClienteMedioPayload(data.cliente),
           };
-          
+
           const clienteCreated = await createCliente(clientePayload);
           clienteId = clienteCreated?._id || clienteCreated?.id;
-          
+
           if (!clienteId) {
             logger.warn("No se recibió ID al crear cliente");
           }
@@ -615,8 +673,8 @@ export default function CotizacionForm() {
       const payload = {
         tipoEvento: data.tipoEvento,
         nombreEvento: data.nombreEvento,
-        fechaEvento: buildFechaEventoISO(data.fechaEvento, data.horaInicio),
-        eventStartDate: buildFechaEventoISO(data.fechaEvento, data.horaInicio),
+        fechaEvento: buildFechaEventoValue(data.fechaEvento),
+        eventStartDate: buildFechaEventoValue(data.fechaEvento),
         eventDurationDays: clampDurationDays(data.eventDurationDays),
         horaInicio: data.horaInicio,
         horaFin: data.horaFin,
@@ -625,9 +683,7 @@ export default function CotizacionForm() {
         invitadosAdultos: Math.max(0, Number(data.invitadosAdultos) || 0),
         invitadosNinos: Math.max(0, Number(data.invitadosNinos) || 0),
         notas: String(data.notas || "").trim(),
-        incluyeIva: Math.max(0, Number.isFinite(Number(data.ivaPorcentaje)) ? Number(data.ivaPorcentaje) : 16) === 0
-          ? true
-          : Boolean(data.incluyeIva),
+        incluyeIva: Boolean(data.incluyeIva),
         ivaPct: Math.max(0, Number.isFinite(Number(data.ivaPorcentaje)) ? Number(data.ivaPorcentaje) : 16),
         ivaPorcentaje: Math.max(0, Number.isFinite(Number(data.ivaPorcentaje)) ? Number(data.ivaPorcentaje) : 16),
         descuentoTipo: data.descuentoTipo || "monto",
@@ -660,26 +716,26 @@ export default function CotizacionForm() {
       }
       const createdResponse = await createCotizacion(payload);
       const saved = createdResponse?.cotizacion || createdResponse?.data?.cotizacion || createdResponse;
-      setBackendBreakdown(saved?.breakdown || null);
+      setBackendBreakdown(normalizeBackendBreakdown(saved));
       setSavedFolio(saved?.folio || "");
-      
-      const mensaje = currentActionType === "contratado" 
+
+      const mensaje = currentActionType === "contratado"
         ? `✅ Cotización contratada con éxito!\nFolio: ${saved?.folio || ""}`
         : `✅ Cotización guardada como borrador.\nFolio: ${saved?.folio || ""}`;
-      
+
       alert(mensaje);
-      
+
       // Redirigir a cotizaciones después de 500ms
       setTimeout(() => {
         navigate("/cotizaciones");
       }, 500);
     } catch (err) {
       logger.error("Error guardando cotización:", err);
-      
+
       const status = err?.response?.status;
       const responseData = err?.response?.data;
       const msg = responseData?.msg || responseData?.message || "No se pudo guardar la cotización";
-      
+
       if (status === 403 && msg?.includes("negocioId")) {
         alert(`❌ No tienes acceso a este negocio.\n\nDetalles: ${msg}`);
       } else if (status === 403) {
@@ -712,8 +768,8 @@ export default function CotizacionForm() {
         folio: savedFolio || "Borrador",
         tipoEvento: values?.tipoEvento || "",
         nombreEvento: values?.nombreEvento || "",
-        fechaEvento: buildFechaEventoISO(values?.fechaEvento, values?.horaInicio),
-        eventStartDate: buildFechaEventoISO(values?.fechaEvento, values?.horaInicio),
+        fechaEvento: buildFechaEventoValue(values?.fechaEvento),
+        eventStartDate: buildFechaEventoValue(values?.fechaEvento),
         eventDurationDays: clampDurationDays(values?.eventDurationDays),
         horaInicio: values?.horaInicio || "",
         horaFin: values?.horaFin || "",
@@ -738,7 +794,7 @@ export default function CotizacionForm() {
           applyDurationMultiplier: item?.applyDurationMultiplier !== false,
         })),
         ivaPct: safeIvaPorcentaje,
-        incluyeIva: safeIvaPorcentaje === 0 ? true : Boolean(values?.incluyeIva),
+        incluyeIva: Boolean(values?.incluyeIva),
         descuentoPct: values?.descuentoTipo === "porcentaje" ? safeDescuentoValor : 0,
         descuentoMonto: values?.descuentoTipo === "monto" ? safeDescuentoValor : Number(backendBreakdown?.descuentoTotal ?? 0),
         descuentoTipo: values?.descuentoTipo || "monto",
@@ -779,7 +835,7 @@ export default function CotizacionForm() {
         return format(fechaEvento, "yyyy-MM-dd");
       } catch (e) {
         logger.error("[fechaEventoText] Error formateando:", e);
-        return fechaEvento.toISOString?.()?.split("T")[0] || "";
+        return extractDateOnly(fechaEvento);
       }
     }
     return "";
@@ -797,52 +853,51 @@ export default function CotizacionForm() {
         ref={formRef}
         onSubmit={handleSubmit(onSubmit)}
         onKeyDown={preventEnterFormSubmit}
-        className="grid grid-cols-1 lg:grid-cols-12 gap-6 bg-[#F4F6F9] p-5 min-h-screen"
+        className="mx-auto grid min-h-screen w-full max-w-7xl min-w-0 grid-cols-1 gap-4 bg-[#F4F6F9] px-4 py-4 sm:gap-6 sm:px-5 sm:py-5 lg:grid-cols-[minmax(0,2fr)_minmax(24rem,27.5rem)] lg:items-start lg:px-6 lg:py-6 xl:grid-cols-[minmax(0,2.1fr)_minmax(25rem,28rem)]"
       >
         {/* Columna principal */}
-        <div className="lg:col-span-8 flex flex-col gap-6">
+        <div className="min-w-0 flex flex-col gap-4 sm:gap-6">
           {/* Header */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
-            <div className="flex items-center gap-2 text-sm text-[#64748B] mb-2">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5 md:p-6">
+            <div className="mb-2 flex flex-wrap items-center gap-2 text-sm text-[#64748B]">
               <span>Cotizaciones</span>
               <span>/</span>
-              <span className="text-[#2563eb] font-semibold">{isDuplicate ? "Duplicar cotización" : "Nueva cotización"}</span>
+              <span className="font-semibold text-[#2563eb]">{isDuplicate ? "Duplicar cotización" : "Nueva cotización"}</span>
             </div>
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-              <div>
-                <h1 className="text-2xl font-bold text-[#111827]">{isDuplicate ? "Duplicar cotización" : "Nueva cotización"}</h1>
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+              <div className="min-w-0">
+                <h1 className="break-words text-2xl font-bold text-[#111827] sm:text-3xl">{isDuplicate ? "Duplicar cotización" : "Nueva cotización"}</h1>
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <Badge variant="outline" className="text-xs border-slate-200 text-[#64748B]">Folio: {savedFolio || "Se genera al guardar"}</Badge>
-                  <Badge className="text-xs bg-slate-100 text-slate-700 hover:bg-slate-100">Estado: Borrador</Badge>
-                  {isDuplicate && <Badge className="text-xs bg-blue-100 text-blue-700 hover:bg-blue-100">Duplicada</Badge>}
+                  <Badge variant="outline" className="max-w-full text-xs border-slate-200 text-[#64748B]">Folio: {savedFolio || "Se genera al guardar"}</Badge>
+                  <Badge className="max-w-full text-xs bg-slate-100 text-slate-700 hover:bg-slate-100">Estado: Borrador</Badge>
+                  {isDuplicate && <Badge className="max-w-full text-xs bg-blue-100 text-blue-700 hover:bg-blue-100">Duplicada</Badge>}
                 </div>
               </div>
-              <div className="flex gap-2">
-                <button type="button" onClick={() => submitAs("borrador")} className="h-11 px-4 rounded-xl border border-slate-200 text-sm font-medium text-[#64748B] hover:bg-slate-50 transition-colors inline-flex items-center gap-2">
+              <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap lg:max-w-[28rem] lg:justify-end">
+                <button type="button" onClick={() => submitAs("borrador")} className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-slate-200 px-4 text-sm font-medium text-[#64748B] transition-colors hover:bg-slate-50 sm:w-auto">
                   <Save className="w-4 h-4" /> Guardar cotización
                 </button>
-                <button type="button" onClick={handleGeneratePDF} className="h-11 px-4 rounded-xl border border-slate-200 text-sm font-medium text-[#64748B] hover:bg-slate-50 transition-colors inline-flex items-center gap-2">
+                <button type="button" onClick={handleGeneratePDF} className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-slate-200 px-4 text-sm font-medium text-[#64748B] transition-colors hover:bg-slate-50 sm:w-auto">
                   <FileText className="w-4 h-4" /> PDF
                 </button>
-                <button type="button" onClick={() => submitAs("contratado")} disabled={!canContratar || saving} className="h-11 px-4 rounded-xl bg-[#2563EB] text-white text-sm font-medium hover:bg-[#1d4ed8] disabled:opacity-50 disabled:cursor-not-allowed transition-colors inline-flex items-center gap-2">
+                <button type="button" onClick={() => submitAs("contratado")} disabled={!canContratar || saving} className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-[#2563EB] px-4 text-sm font-medium text-white transition-colors hover:bg-[#1d4ed8] disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto">
                   <CheckCircle className="w-4 h-4" /> Contratar
                 </button>
               </div>
             </div>
           </div>
 
-          {/* Card: Datos del servicio */}
-          <Card className="rounded-2xl border-slate-200 shadow-sm">
-            <CardHeader className="pb-2">
-              <p className="text-base font-semibold text-[#111827]">Datos del servicio</p>
-              <p className="text-xs text-[#64748B]">Información general del servicio</p>
-            </CardHeader>
-            <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <FormSection
+            title="Datos del servicio"
+            description="Información general del servicio"
+            contentClassName="space-y-5"
+          >
+            <FieldGrid columns={2}>
               <div>
-                <Label className="text-xs uppercase tracking-wide text-slate-500">Tipo de evento <span className="text-red-500">*</span></Label>
-                <div className="flex gap-2 items-center">
+                <Label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">Tipo de evento <span className="text-red-500">*</span></Label>
+                <div className="flex items-center gap-2">
                   <select
-                    className="flex-1 h-11 rounded-xl border border-slate-200 px-3 text-sm"
+                    className="h-11 flex-1 rounded-xl border border-slate-200 px-3 text-sm"
                     value={tipoEvento || ""}
                     onChange={(e) => setField("tipoEvento", e.target.value)}
                   >
@@ -856,7 +911,7 @@ export default function CotizacionForm() {
                   <button
                     type="button"
                     onClick={() => setModalTipoEventoOpen(true)}
-                    className="h-11 w-11 flex items-center justify-center rounded-xl border border-slate-200 hover:bg-slate-50 transition-colors"
+                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200 transition-colors hover:bg-slate-50"
                     title="Agregar nuevo tipo de evento"
                   >
                     <Plus size={18} className="text-gray-600" />
@@ -865,14 +920,16 @@ export default function CotizacionForm() {
               </div>
 
               <div>
-                <Label className="text-xs uppercase tracking-wide text-slate-500">Nombre del evento <span className="text-red-500">*</span></Label>
+                <Label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">Nombre del evento <span className="text-red-500">*</span></Label>
                 <Input className="h-11 rounded-xl border-slate-200" {...methods.register("nombreEvento")} />
               </div>
+            </FieldGrid>
 
+            <FieldGrid columns={3}>
               <div>
-                <Label className="text-xs uppercase tracking-wide text-slate-500">Fecha del evento <span className="text-red-500">*</span></Label>
-                <input 
-                  type="date" 
+                <Label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">Fecha del evento <span className="text-red-500">*</span></Label>
+                <input
+                  type="date"
                   value={fechaEventoText || ""}
                   onChange={(e) => {
                     if (e.target.value) {
@@ -881,14 +938,14 @@ export default function CotizacionForm() {
                       setField("fechaEvento", newDate);
                     }
                   }}
-                  className="w-full h-11 px-3 rounded-xl border border-slate-200 text-sm"
-                  min={new Date().toISOString().split("T")[0]}
+                  className="h-11 w-full rounded-xl border border-slate-200 px-3 text-sm"
+                  min={toLocalDateOnly(new Date())}
                 />
                 <p className="mt-1 text-xs text-[#64748B]">{eventDateRangeLabel}</p>
               </div>
 
               <div>
-                <Label className="text-xs uppercase tracking-wide text-slate-500">Duración (días) <span className="text-red-500">*</span></Label>
+                <Label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">Duración (días) <span className="text-red-500">*</span></Label>
                 <Input
                   className="h-11 rounded-xl border-slate-200"
                   type="number"
@@ -899,21 +956,25 @@ export default function CotizacionForm() {
                 />
               </div>
 
-              <div className="flex gap-2">
-                <div className="flex-1">
-                  <Label className="text-xs uppercase tracking-wide text-slate-500">Hora inicio <span className="text-red-500">*</span></Label>
-                  <Input className="h-11 rounded-xl border-slate-200" type="time" {...methods.register("horaInicio")} />
-                </div>
-                <div className="flex-1">
-                  <Label className="text-xs uppercase tracking-wide text-slate-500">Hora fin <span className="text-red-500">*</span></Label>
-                  <Input className="h-11 rounded-xl border-slate-200" type="time" {...methods.register("horaFin")} />
-                </div>
+              <div className="min-w-0 xl:col-span-1">
+                <FieldGrid columns={2} className="gap-3 sm:gap-4 md:grid-cols-2 xl:grid-cols-2">
+                  <div>
+                    <Label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">Hora inicio <span className="text-red-500">*</span></Label>
+                    <Input className="h-11 rounded-xl border-slate-200" type="time" {...methods.register("horaInicio")} />
+                  </div>
+                  <div>
+                    <Label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">Hora fin <span className="text-red-500">*</span></Label>
+                    <Input className="h-11 rounded-xl border-slate-200" type="time" {...methods.register("horaFin")} />
+                  </div>
+                </FieldGrid>
               </div>
+            </FieldGrid>
 
+            <FieldGrid columns={3}>
               <div>
-                <Label className="text-xs uppercase tracking-wide text-slate-500">Negocio <span className="text-red-500">*</span></Label>
+                <Label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">Negocio <span className="text-red-500">*</span></Label>
                 <select
-                  className="w-full h-11 rounded-xl border border-slate-200 px-3 text-sm"
+                  className="h-11 w-full rounded-xl border border-slate-200 px-3 text-sm"
                   value={negocioIdValue}
                   onChange={(e) => setField("negocioId", e.target.value)}
                   disabled={negociosLoading}
@@ -935,9 +996,9 @@ export default function CotizacionForm() {
               </div>
 
               <div>
-                <Label className="text-xs uppercase tracking-wide text-slate-500">Paquete</Label>
+                <Label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">Paquete</Label>
                 <select
-                  className="w-full h-11 rounded-xl border border-slate-200 px-3 text-sm"
+                  className="h-11 w-full rounded-xl border border-slate-200 px-3 text-sm"
                   value={paqueteId || ""}
                   onChange={(e) => setField("paqueteId", e.target.value)}
                   disabled={paquetesLoading}
@@ -951,36 +1012,42 @@ export default function CotizacionForm() {
                 </select>
               </div>
 
-              <div>
-                <Label className="text-xs uppercase tracking-wide text-slate-500">Invitados adultos</Label>
-                <Input
-                  className="h-11 rounded-xl border-slate-200"
-                  type="number"
-                  min={0}
-                  {...methods.register("invitadosAdultos", { valueAsNumber: true })}
-                />
-              </div>
+              <div className="min-w-0">
+                <FieldGrid columns={2} className="gap-3 sm:gap-4 md:grid-cols-2 xl:grid-cols-2">
+                  <div>
+                    <Label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">Invitados adultos</Label>
+                    <Input
+                      className="h-11 rounded-xl border-slate-200"
+                      type="number"
+                      min={0}
+                      {...methods.register("invitadosAdultos", { valueAsNumber: true })}
+                    />
+                  </div>
 
-              <div>
-                <Label className="text-xs uppercase tracking-wide text-slate-500">Invitados niños</Label>
-                <Input
-                  className="h-11 rounded-xl border-slate-200"
-                  type="number"
-                  min={0}
-                  {...methods.register("invitadosNinos", { valueAsNumber: true })}
-                />
+                  <div>
+                    <Label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">Invitados niños</Label>
+                    <Input
+                      className="h-11 rounded-xl border-slate-200"
+                      type="number"
+                      min={0}
+                      {...methods.register("invitadosNinos", { valueAsNumber: true })}
+                    />
+                  </div>
+                </FieldGrid>
               </div>
+            </FieldGrid>
 
-              <div className="md:col-span-2">
-                <Label className="text-xs uppercase tracking-wide text-slate-500">Dirección / Lugar del evento</Label>
-                <Input 
+            <FieldGrid columns={1}>
+              <div>
+                <Label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">Dirección / Lugar del evento</Label>
+                <Input
                   className="h-11 rounded-xl border-slate-200"
                   placeholder="Ej: Calle Principal 123, Apartado 4B"
-                  {...methods.register("direccion")} 
+                  {...methods.register("direccion")}
                 />
               </div>
-            </CardContent>
-          </Card>
+            </FieldGrid>
+          </FormSection>
 
           {/* Card: Cliente */}
           <Card className="rounded-2xl border-slate-200 shadow-sm">
@@ -992,40 +1059,48 @@ export default function CotizacionForm() {
             </CardContent>
           </Card>
 
-          {/* Card: Catálogos */}
-          <Card className="rounded-2xl border-slate-200 shadow-sm">
-            <CardHeader className="text-base font-semibold text-[#111827]">Catálogos</CardHeader>
-            <CardContent>
-              <CatalogTabs 
+          <FormSection title="Catálogos" contentClassName="min-w-0 space-y-4">
+            <div className="min-w-0 overflow-hidden">
+              <CatalogTabs
+                onAddItem={(item) => append(item, { shouldFocus: false })}
                 onNuevoItem={(tipo) => { setNuevoCatalogoTipo(tipo); setModalNuevoCatalogoOpen(true); }}
+                recentCatalogItem={recentCatalogItem}
                 refreshKey={catalogRefreshKey}
               />
-            </CardContent>
-          </Card>
+            </div>
+          </FormSection>
 
           {/* Card: Detalle de cotización */}
           <div ref={detalleCotizacionRef}>
             <Card className="rounded-2xl border-slate-200 shadow-sm">
               <CardHeader className="text-base font-semibold text-[#111827]">Detalle de cotización <span className="text-red-500">*</span></CardHeader>
               <CardContent>
-                <ItemsTable />
+                <ItemsTable fields={fields} remove={remove} />
                 <p className="text-xs text-[#64748B] mt-3">Agregar más desde Catálogos</p>
               </CardContent>
             </Card>
           </div>
 
-          {/* Card: Notas */}
-          <Card className="rounded-2xl border-slate-200 shadow-sm">
-            <CardHeader className="text-base font-semibold text-[#111827]">Notas</CardHeader>
-            <CardContent>
-              <Textarea className="rounded-xl border-slate-200 min-h-[100px]" maxLength={2000} placeholder="Agrega condiciones, horarios, restricciones, etc." {...methods.register("notas")} />
-            </CardContent>
-          </Card>
+          <FormSection
+            title="Notas"
+            description="Agrega condiciones, horarios, restricciones y cualquier aclaración relevante para la cotización."
+          >
+            <div className="space-y-2 rounded-2xl border border-slate-200 bg-slate-50/50 p-4 sm:p-5">
+              <Label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Notas internas</Label>
+              <Textarea
+                className="min-h-[120px] rounded-xl border-slate-200 bg-white"
+                maxLength={2000}
+                placeholder="Agrega condiciones, horarios, restricciones, etc."
+                {...methods.register("notas")}
+              />
+              <p className="text-xs text-[#64748B]">Este contenido acompaña la cotización sin alterar cálculos ni el detalle de conceptos.</p>
+            </div>
+          </FormSection>
         </div>
 
         {/* Sidebar derecha: Resumen de costos - Sticky */}
-        <div className="lg:col-span-4">
-          <div className="lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto">
+        <div className="min-w-0 max-w-full lg:min-w-[24rem]">
+          <div className="space-y-4 lg:sticky lg:top-6 lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto">
             <ResumenCostos
               breakdown={backendBreakdown}
               eventDurationDays={eventDurationDays}
@@ -1057,7 +1132,8 @@ export default function CotizacionForm() {
                 >
                   <div className="fixed inset-0 bg-black/30" />
                 </Transition.Child>
-                <div className="fixed inset-0 flex items-center justify-center p-4">
+                <div className="fixed inset-0 overflow-y-auto">
+                  <div className="flex min-h-full items-end justify-center p-3 sm:items-center sm:p-4">
                   <Transition.Child
                     as={Fragment}
                     enter="ease-out duration-300"
@@ -1067,52 +1143,61 @@ export default function CotizacionForm() {
                     leaveFrom="opacity-100 scale-100"
                     leaveTo="opacity-0 scale-95"
                   >
-                    <Dialog.Panel className="w-full max-w-lg bg-white rounded-lg shadow-xl p-6">
-                      <div className="flex items-center justify-between mb-4">
+                    <Dialog.Panel
+                      className="flex max-h-[min(100dvh-1.5rem,48rem)] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl bg-white shadow-xl sm:max-h-[min(100dvh-2rem,48rem)] sm:rounded-2xl"
+                      onSubmitCapture={(event) => {
+                        event.stopPropagation();
+                      }}
+                    >
+                      <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-4 py-4 sm:px-6">
                         <Dialog.Title className="text-lg font-semibold text-gray-900">
                           Nuevo catálogo: {nuevoCatalogoTipo}
                         </Dialog.Title>
                         <button
                           type="button"
                           onClick={() => setModalNuevoCatalogoOpen(false)}
-                          className="text-gray-400 hover:text-gray-600"
+                          className="shrink-0 text-gray-400 hover:text-gray-600"
                         >
                           <X size={20} />
                         </button>
                       </div>
-                      <NuevoCatalogoForm 
-                        tipo={nuevoCatalogoTipo} 
-                        onCancel={() => setModalNuevoCatalogoOpen(false)}
-                        onSuccess={(createdItem) => {
-                          setModalNuevoCatalogoOpen(false);
-                          setCatalogRefreshKey((k) => k + 1);
-                          // Auto-add new item to cotización
-                          if (createdItem && createdItem.nombre && createdItem.precio !== undefined) {
-                            const itemsActuales = methods.getValues("items") || [];
-                            methods.setValue(
-                              "items",
-                              [
-                                ...itemsActuales,
-                                {
-                                  tipo: mapCatalogoTipoToItemTipo(nuevoCatalogoTipo),
-                                  nombre: createdItem.nombre,
-                                  precio: Number(createdItem.precio || 0),
-                                  cantidad: 1,
-                                  catalogoTipo: nuevoCatalogoTipo,
-                                  applyDurationMultiplier: true,
-                                },
-                              ],
-                              { shouldDirty: true, shouldTouch: true, shouldValidate: true }
-                            );
+                      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
+                        <NuevoCatalogoForm
+                          tipo={nuevoCatalogoTipo}
+                          embedded
+                          onCancel={() => setModalNuevoCatalogoOpen(false)}
+                          onSuccess={(createdItem) => {
+                            const normalizedCreatedItem = resolveCreatedCatalogItem(createdItem);
+                            // Auto-add new item to cotización
+                            if (normalizedCreatedItem && normalizedCreatedItem.nombre) {
+                              append({
+                                tipo: mapCatalogoTipoToItemTipo(nuevoCatalogoTipo),
+                                nombre: normalizedCreatedItem.nombre,
+                                precio: Number(normalizedCreatedItem.precio || 0),
+                                cantidad: 1,
+                                catalogoTipo: nuevoCatalogoTipo,
+                                applyDurationMultiplier: true,
+                              }, { shouldFocus: false });
 
-                            requestAnimationFrame(() => {
-                              detalleCotizacionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-                            });
-                          }
-                        }} 
-                      />
+                              setModalNuevoCatalogoOpen(false);
+                              setRecentCatalogItem({
+                                catalogoTipo: nuevoCatalogoTipo,
+                                item: normalizedCreatedItem,
+                              });
+                              setCatalogRefreshKey((k) => k + 1);
+
+                              requestAnimationFrame(() => {
+                                detalleCotizacionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+                              });
+                            } else {
+                              alert("No se pudo agregar automáticamente el servicio a la cotización. Intenta nuevamente.");
+                            }
+                          }}
+                        />
+                      </div>
                     </Dialog.Panel>
                   </Transition.Child>
+                  </div>
                 </div>
               </Dialog>
             </Transition>
@@ -1130,7 +1215,8 @@ export default function CotizacionForm() {
             <div className="fixed inset-0 bg-black/30" />
           </Transition.Child>
 
-          <div className="fixed inset-0 flex items-center justify-center p-4">
+          <div className="fixed inset-0 overflow-y-auto">
+            <div className="flex min-h-full items-end justify-center p-3 sm:items-center sm:p-4">
             <Transition.Child
               as={Fragment}
               enter="ease-out duration-300"
@@ -1140,63 +1226,66 @@ export default function CotizacionForm() {
               leaveFrom="opacity-100 scale-100"
               leaveTo="opacity-0 scale-95"
             >
-              <Dialog.Panel className="w-full max-w-md bg-white rounded-lg shadow-xl p-6">
-                <div className="flex items-center justify-between mb-4">
+              <Dialog.Panel className="flex w-full max-w-md flex-col overflow-hidden rounded-t-2xl bg-white shadow-xl sm:rounded-2xl">
+                <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-4 py-4 sm:px-6">
                   <Dialog.Title className="text-lg font-semibold text-gray-900">
                     Agregar Tipo de Evento
                   </Dialog.Title>
                   <button
                     type="button"
                     onClick={() => setModalTipoEventoOpen(false)}
-                    className="text-gray-400 hover:text-gray-600"
+                    className="shrink-0 text-gray-400 hover:text-gray-600"
                   >
                     <X size={20} />
                   </button>
                 </div>
 
-                <div className="mb-4">
-                  <Label>Nombre del tipo de evento</Label>
-                  <Input
-                    type="text"
-                    value={nuevoTipoEvento}
-                    onChange={(e) => setNuevoTipoEvento(e.target.value)}
-                    placeholder="Ej: Bautizo, Aniversario, etc."
-                    className="mt-1"
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        handleAgregarTipoEvento();
-                      }
-                    }}
-                  />
-                  <p className="text-xs text-gray-500 mt-2">
-                    Este tipo de evento se guardará para uso futuro en nuevas cotizaciones.
-                  </p>
-                </div>
+                <div className="space-y-4 px-4 py-4 sm:px-6 sm:py-5">
+                  <div>
+                    <Label>Nombre del tipo de evento</Label>
+                    <Input
+                      type="text"
+                      value={nuevoTipoEvento}
+                      onChange={(e) => setNuevoTipoEvento(e.target.value)}
+                      placeholder="Ej: Bautizo, Aniversario, etc."
+                      className="mt-1"
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          handleAgregarTipoEvento();
+                        }
+                      }}
+                    />
+                    <p className="mt-2 text-xs text-gray-500">
+                      Este tipo de evento se guardará para uso futuro en nuevas cotizaciones.
+                    </p>
+                  </div>
 
-                <div className="flex gap-2 justify-end">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setModalTipoEventoOpen(false);
-                      setNuevoTipoEvento("");
-                    }}
-                    className="px-4 py-2 text-sm border border-gray-300 rounded hover:bg-gray-50"
-                    disabled={savingTipoEvento}
-                  >
-                    Cancelar
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleAgregarTipoEvento}
-                    className="px-4 py-2 text-sm bg-[#2563eb] text-white rounded hover:bg-[#1d4ed8] disabled:opacity-50"
-                    disabled={savingTipoEvento || !nuevoTipoEvento.trim()}
-                  >
-                    {savingTipoEvento ? "Guardando..." : "Agregar"}
-                  </button>
+                  <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setModalTipoEventoOpen(false);
+                        setNuevoTipoEvento("");
+                      }}
+                      className="w-full rounded-lg border border-gray-300 px-4 py-2 text-sm hover:bg-gray-50 sm:w-auto"
+                      disabled={savingTipoEvento}
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleAgregarTipoEvento}
+                      className="w-full rounded-lg bg-[#2563eb] px-4 py-2 text-sm text-white hover:bg-[#1d4ed8] disabled:opacity-50 sm:w-auto"
+                      disabled={savingTipoEvento || !nuevoTipoEvento.trim()}
+                    >
+                      {savingTipoEvento ? "Guardando..." : "Agregar"}
+                    </button>
+                  </div>
                 </div>
               </Dialog.Panel>
             </Transition.Child>
+            </div>
           </div>
         </Dialog>
       </Transition>

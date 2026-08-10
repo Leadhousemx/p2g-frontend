@@ -1,75 +1,68 @@
-import { useEffect, useState } from "react";
-
-export type Compra = {
-  id: string;
-  fecha: string; // ISO yyyy-mm-dd
-  documentoTipo: "Factura" | "Recibo";
-  documentoFolio?: string;
-  proveedorId: string;
-  proveedorNombre: string;
-  formaPago: "Contado" | "Crédito";
-  metodoPago: "Transferencia" | "Efectivo" | "Tarjeta" | "Cheque" | "Otro";
-};
-
-type Params = {
-  desde: string;
-  hasta: string;
+﻿import { useEffect, useState, useCallback } from "react";
+import { listCompras as fetchCompras, deleteCompra, Compra } from "../services/comprasService";
+import { logger } from "../lib/logger";
+export type ComprasFilters = {
+  desde?: string;
+  hasta?: string;
   proveedorId?: string;
-  page: number;
-  pageSize: number;
+  tipoCompra?: "general" | "evento";
+  eventoId?: string;
+  page?: number;
+  pageSize?: number;
 };
 
-const MOCK_PROVEEDORES = [
-  { id: "prov-1", nombre: "Proveedor Uno" },
-  { id: "prov-2", nombre: "Proveedor Dos" },
-  { id: "prov-3", nombre: "Proveedor Tres" },
-];
-
-function randomDate(start: Date, end: Date) {
-  return new Date(start.getTime() + Math.random() * (end.getTime() - start.getTime()));
-}
-
-function mockCompras(desde: string, hasta: string): Compra[] {
-  const start = new Date(desde);
-  const end = new Date(hasta);
-  const compras: Compra[] = [];
-  for (let i = 0; i < 30; i++) {
-    const fecha = randomDate(start, end).toISOString().slice(0, 10);
-    const proveedor = MOCK_PROVEEDORES[Math.floor(Math.random() * MOCK_PROVEEDORES.length)];
-    const tipo = Math.random() > 0.5 ? "Factura" : "Recibo";
-    compras.push({
-      id: `compra-${i}`,
-      fecha,
-      documentoTipo: tipo,
-      documentoFolio: tipo === "Factura" ? `F-${1000 + i}` : `R-${1000 + i}`,
-      proveedorId: proveedor.id,
-      proveedorNombre: proveedor.nombre,
-      formaPago: Math.random() > 0.5 ? "Contado" : "Crédito",
-      metodoPago: ["Transferencia", "Efectivo", "Tarjeta", "Cheque", "Otro"][Math.floor(Math.random() * 5)] as Compra["metodoPago"],
-    });
-  }
-  return compras;
-}
-
-export function useCompras(params: Params) {
-  const [data, setData] = useState<Compra[]>([]);
+export function useCompras(filters?: ComprasFilters) {
+  const [compras, setCompras] = useState<Compra[]>([]);
   const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
+  const [totalPages, setTotalPages] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const list = useCallback(async (newFilters?: ComprasFilters) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetchCompras(newFilters || filters);
+      setCompras(response.compras || []);
+      setTotal(response.total || 0);
+      setTotalPages(response.totalPages || 0);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Error al cargar compras";
+      setError(message);
+      logger.error("Error loading compras:", err);
+      setCompras([]);
+      setTotal(0);
+      setTotalPages(0);
+    } finally {
+      setLoading(false);
+    }
+  }, [filters]);
+
+  const remove = useCallback(async (id: string) => {
+    try {
+      await deleteCompra(id);
+      setCompras((prev) => prev.filter((c) => c._id !== id));
+      setTotal((prev) => prev - 1);
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Error al eliminar compra";
+      setError(message);
+      logger.error("Error deleting compra:", err);
+      return false;
+    }
+  }, []);
 
   useEffect(() => {
-    setLoading(true);
-    // Simula fetch
-    setTimeout(() => {
-      let compras = mockCompras(params.desde, params.hasta);
-      if (params.proveedorId) {
-        compras = compras.filter(c => c.proveedorId === params.proveedorId);
-      }
-      setTotal(compras.length);
-      const start = (params.page - 1) * params.pageSize;
-      setData(compras.slice(start, start + params.pageSize));
-      setLoading(false);
-    }, 500);
-  }, [params.desde, params.hasta, params.proveedorId, params.page, params.pageSize]);
+    list();
+  }, [list]);
 
-  return { data, total, loading };
+  return {
+    compras,
+    total,
+    totalPages,
+    loading,
+    error,
+    list,
+    remove,
+  };
 }

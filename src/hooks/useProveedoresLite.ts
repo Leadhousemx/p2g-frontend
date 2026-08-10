@@ -1,35 +1,49 @@
-import { useEffect, useState } from "react";
+﻿import { useEffect, useState, useCallback } from "react";
+import { listProveedores } from "../services/proveedoresService";
+import { logger } from "../lib/logger";
 
-export type ProveedorLite = {
-  id: string;
-  nombre: string;
-};
-
-const MOCK_PROVEEDORES: ProveedorLite[] = [
-  { id: "prov-1", nombre: "Proveedor Uno" },
-  { id: "prov-2", nombre: "Proveedor Dos" },
-  { id: "prov-3", nombre: "Proveedor Tres" },
-  { id: "prov-4", nombre: "Proveedor Cuatro" },
-  { id: "prov-5", nombre: "Proveedor Cinco" },
-];
+type ProveedorLite = { id: string; nombre: string };
 
 export function useProveedoresLite(search: string = "") {
   const [proveedores, setProveedores] = useState<ProveedorLite[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    setLoading(true);
-    setTimeout(() => {
+  const fetch = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      const response = await listProveedores({ page: 1, pageSize: 500 });
+      const dataArray = Array.isArray(response?.proveedores) ? response.proveedores : [];
+
+      let filtered = dataArray;
       if (search) {
-        setProveedores(
-          MOCK_PROVEEDORES.filter(p => p.nombre.toLowerCase().includes(search.toLowerCase()))
+        filtered = filtered.filter((p) =>
+          String(p?.nombreComercial || p?.razonSocial || "")
+            .toLowerCase()
+            .includes(search.toLowerCase())
         );
-      } else {
-        setProveedores(MOCK_PROVEEDORES);
       }
+
+      setProveedores(
+        filtered.map((p) => ({
+          id: String(p?._id || ""),
+          nombre: String(p?.nombreComercial || p?.razonSocial || ""),
+        }))
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Error loading proveedores";
+      setError(message);
+      logger.error("Error loading proveedores:", err);
+      setProveedores([]);
+    } finally {
       setLoading(false);
-    }, 300);
+    }
   }, [search]);
 
-  return { proveedores, loading };
+  useEffect(() => {
+    fetch();
+  }, [fetch]);
+
+  return { proveedores, loading, error };
 }

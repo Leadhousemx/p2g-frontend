@@ -1,9 +1,11 @@
 // src/services/api.js
 import axios from "axios";
 
-// Aquí pones la URL base de tu backend
+const API_BASE = import.meta.env.VITE_API_URL || "https://api.brentrix.com/api";
+
 const API = axios.create({
-  baseURL: "http://162.240.234.127:5000/api", // Cambia por tu dominio en producción
+  baseURL: API_BASE,
+  withCredentials: true,
 });
 
 // Interceptor para enviar el token automáticamente
