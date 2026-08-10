@@ -356,6 +356,7 @@ export default function RegistroPage() {
             return;
           }
         } catch {
+          // auto-login error; continue with standard registration flow
         }
       }
 

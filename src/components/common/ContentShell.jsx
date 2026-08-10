@@ -6,12 +6,13 @@ const paddingVariants = {
 };
 
 export default function ContentShell({
-  as: Component = "div",
+  as = "div",
   padding = "none",
   className,
   children,
   ...props
 }) {
+  const Component = as;
   return (
     <Component
       className={cn("w-full min-w-0", paddingVariants[padding] || paddingVariants.none, className)}

@@ -15,7 +15,7 @@ import { getCotizacionById } from "../services/cotizacionesService";
 import { api } from "../lib/api";
 import { useAuth } from "../context/auth-context";
 import { extractDateOnly, formatDateOnly, toLocalDateOnly } from "../utils/dateOnly";
-import { canViewReports, isVentasRole } from "../utils/rolePermissions";
+import { canViewReports } from "../utils/rolePermissions";
 import ContentShell from "../components/common/ContentShell";
 import MobileNavDrawer from "../components/common/MobileNavDrawer";
 import ResponsiveNavMenu from "../components/common/ResponsiveNavMenu";
@@ -160,7 +160,6 @@ export default function DashboardLayout() {
   const { data: commercialStatus, loading: commercialLoading, accessAllowed: commercialAccessAllowed } = useCommercialStatus();
   const authContext = useAuth();
   const currentUser = authContext?.user || null;
-  const isVentas = isVentasRole(currentUser);
   const showReports = canViewReports(currentUser);
   const setStatus = authContext?.setStatus;
   const setUser = authContext?.setUser;
@@ -298,8 +297,7 @@ export default function DashboardLayout() {
   };
 
   const currentSectionTitle = breadcrumbs[1] || breadcrumbs[0];
-  const currentSectionHint = breadcrumbs[1] ? breadcrumbs[0] : "Sistema";
-  const brand = <img src={imagenBrentrix} alt="Brentrix" className="h-32 w-auto max-w-full object-contain" />;
+  const brand =<img src={imagenBrentrix} alt="Brentrix" className="h-32 w-auto max-w-full object-contain" />;
 
   // A valid commercial plan (active or grace) overrides trial denial.
   // Only count it as valid once loading is complete and we have real data.

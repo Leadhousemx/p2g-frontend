@@ -5,7 +5,7 @@ import { useState, useEffect } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../context/auth-context";
 import apiClient from "../api/axiosConfig";
-import { getCsrfToken, refreshCsrfToken, clearCsrfToken } from "../services/csrfService";
+import { getCsrfToken, refreshCsrfToken } from "../services/csrfService";
 import { removeToken, setRefreshToken, setToken } from "../utils/tokenManager";
 import axios from "axios";
 import { Lock, Mail } from "lucide-react";

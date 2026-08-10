@@ -26,6 +26,7 @@ function writeSessionJson(key, value) {
     }
     sessionStorage.setItem(key, JSON.stringify(value));
   } catch {
+    // sessionStorage may be unavailable in this context
   }
 }
 

@@ -323,7 +323,6 @@ export default function CotizacionVer() {
   const isAdmin = isAdminRole(user);
   const eventoCerrado = cotizacion?.eventoCerrado === true;
   const saldoPendiente = n(cotizacion?.saldoPendiente ?? cotizacion?.saldo ?? 0);
-  const porcentajePagado = optionalNumber(cotizacion?.porcentajePagado);
   const estaPagadaAl100 = cotizacion?.estaPagadaAl100 === true || saldoPendiente <= 0;
   const puedeCerrarEvento = cotizacion?.puedeCerrarEvento === true && estaPagadaAl100 && saldoPendiente <= 0;
   const cierreBloqueadoMotivo = String(

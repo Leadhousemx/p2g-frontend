@@ -149,7 +149,7 @@ export default function ItemsTable({ fields = [], remove }) {
       desktopAlign: "right",
       desktopHeaderAlign: "right",
       mobilePriority: 1,
-      renderField: ({ item, index }) => (
+      renderField: ({ index }) => (
         <input
           type="number"
           min={0}
@@ -178,9 +178,7 @@ export default function ItemsTable({ fields = [], remove }) {
       desktopAlign: "center",
       desktopHeaderAlign: "center",
       mobilePriority: 2,
-      renderField: ({ item, index }) => {
-        const cantidad = Number(item.raw?.currentItem?.cantidad || 1);
-
+      renderField: ({ index }) => {
         return (
           <div className={QUOTE_LINE_ITEM_STEPPER_CLASS}>
             <button
