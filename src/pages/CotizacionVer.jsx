@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ChevronRight, Copy, FileEdit, FileText, MoreVertical } from "lucide-react";
+import { ChevronRight, Copy, CreditCard, FileEdit, FileText, MoreVertical } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -520,6 +520,17 @@ export default function CotizacionVer() {
                     >
                       <Copy size={14} /> Duplicar
                     </DropdownMenuItem>
+                    {normalizeQuotationStatus(cotizacion?.estado) === "Contratado" && (
+                      <>
+                        <DropdownMenuSeparator className="bg-slate-200" />
+                        <DropdownMenuItem
+                          onSelect={() => navigate(`/cotizaciones/${id}/pagos`)}
+                          className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm hover:bg-slate-50"
+                        >
+                          <CreditCard size={14} /> Agregar Pago
+                        </DropdownMenuItem>
+                      </>
+                    )}
                     {cotizacion?.estado !== "Contratado" && (
                       <>
                         <DropdownMenuSeparator className="bg-slate-200" />
