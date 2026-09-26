@@ -134,6 +134,13 @@ export default function PagosCotizacion() {
     setShowCreatedPagoBanner(Boolean(locationState?.createdPagoId));
   }, [locationState?.createdPagoId]);
 
+  useEffect(() => {
+    if (locationState?.createdPagoId) {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const eventoCerrado = cotizacion?.eventoCerrado === true;
   const saldoPendiente = Number(cotizacion?.saldoPendiente ?? cotizacion?.saldo ?? 0);
   const porcentajePagado = Number(cotizacion?.porcentajePagado);
