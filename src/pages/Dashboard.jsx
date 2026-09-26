@@ -113,6 +113,7 @@ function buildDashboardCalendarEvent(cotizacion) {
       horaInicio: cotizacion?.horaInicio || horaInicio,
       durationDays,
       eventEndDate: endYmd,
+      saldoPendiente: Number(cotizacion?.saldoPendiente ?? cotizacion?.saldo ?? 0),
     },
   };
 }
@@ -694,10 +695,15 @@ export default function Dashboard() {
               eventClassNames="event-pill"
               eventContent={(arg) => {
                 const eventoCerrado = arg.event.extendedProps?.eventoCerrado === true;
+                const hasSaldoPendiente =
+                  arg.event.extendedProps?.estado === "Contratado" &&
+                  !eventoCerrado &&
+                  Number(arg.event.extendedProps?.saldoPendiente ?? 0) > 0;
 
                 return (
-                  <div className="truncate px-2 py-0.5 text-xs font-medium text-white">
+                  <div className="flex items-center gap-1 px-2 py-0.5 text-xs font-medium text-white min-w-0">
                     <span className="truncate">{arg.event.title}</span>
+                    {hasSaldoPendiente ? <span className="w-2 h-2 rounded-full bg-orange-400 flex-shrink-0" title="Saldo pendiente" /> : null}
                     {eventoCerrado ? <span className="ml-1 rounded-full bg-white/20 px-1.5 py-0.5 text-[10px] font-semibold">Cerrado</span> : null}
                   </div>
                 );
