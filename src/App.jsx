@@ -59,6 +59,7 @@ const BackOfficeRoutes = lazy(() => import("./backoffice/routes/BackOfficeRoutes
 
 export default function App() {
   return (
+    <div data-e2e-marker="nexus-real-009-rollback-20260930T142943Z">
     <AuthProvider>
       <ErrorBoundary FallbackComponent={PageSkeleton}>
         <Suspense fallback={<PageSkeleton />}>
@@ -438,6 +439,7 @@ export default function App() {
         </Suspense>
       </ErrorBoundary>
     </AuthProvider>
+    </div>
   );
 }
 
