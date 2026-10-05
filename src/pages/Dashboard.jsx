@@ -161,6 +161,9 @@ export default function Dashboard() {
     cotizacionesPendientes: 0,
   });
   const [loadingKpis, setLoadingKpis] = useState(false);
+  const currentMonthYear = useMemo(() => { const now = new Date(); return { mes: now.getMonth() + 1, año: now.getFullYear() }; }, []);
+  const [selectedMonthYear, setSelectedMonthYear] = useState(() => { const now = new Date(); return { mes: now.getMonth() + 1, año: now.getFullYear() }; });
+  const [kpisComparison, setKpisComparison] = useState(null);
 
   const normalizeNumber = useCallback((value) => {
     if (value === null || value === undefined) return 0;
@@ -177,29 +180,34 @@ export default function Dashboard() {
   const loadKpis = useCallback(async () => {
     setLoadingKpis(true);
     try {
-      const data = await getDashboardKPIs();
+      const { mes, año } = selectedMonthYear;
+      const data = await getDashboardKPIs(mes, año);
       const resolved = data?.kpis || data?.data || data?.result || data || {};
+      const norm = (v1, v2) => normalizeNumber(v1 ?? v2);
       setKpis({
-        eventosContratadosMes: normalizeNumber(
-          resolved.eventosContratadosMes ?? resolved.eventosContratadosMesActual
-        ),
-        eventosCerradosMes: normalizeNumber(
-          resolved.eventosCerradosMes ?? resolved.eventosCerradosMesActual
-        ),
-        ingresos: normalizeNumber(resolved.ingresos ?? resolved.ingresosMesActual),
-        eventosConfirmadosAño: normalizeNumber(
-          resolved.eventosConfirmadosAño ?? resolved.eventosConfirmadosAno
-        ),
-        cotizacionesPendientes: normalizeNumber(
-          resolved.cotizacionesPendientes ?? resolved.cotizacionesPendientesAprobacion
-        ),
+        eventosContratadosMes: norm(resolved.eventosContratadosMes, resolved.eventosContratadosMesActual),
+        eventosCerradosMes: norm(resolved.eventosCerradosMes, resolved.eventosCerradosMesActual),
+        ingresos: norm(resolved.ingresos, resolved.ingresosMesActual),
+        eventosConfirmadosAño: norm(resolved.eventosConfirmadosAño, resolved.eventosConfirmadosAno),
+        cotizacionesPendientes: norm(resolved.cotizacionesPendientes, resolved.cotizacionesPendientesAprobacion),
       });
+      if (mes !== currentMonthYear.mes || año !== currentMonthYear.año) {
+        const cd = await getDashboardKPIs(currentMonthYear.mes, currentMonthYear.año);
+        const cr = cd?.kpis || cd?.data || cd?.result || cd || {};
+        setKpisComparison({
+          eventosContratadosMes: norm(cr.eventosContratadosMes, cr.eventosContratadosMesActual),
+          eventosCerradosMes: norm(cr.eventosCerradosMes, cr.eventosCerradosMesActual),
+          ingresos: norm(cr.ingresos, cr.ingresosMesActual),
+        });
+      } else {
+        setKpisComparison(null);
+      }
     } catch (err) {
       logger.error("[ERROR Dashboard] No se pudieron cargar los KPIs:", err);
     } finally {
       setLoadingKpis(false);
     }
-  }, [normalizeNumber]);
+  }, [normalizeNumber, selectedMonthYear, currentMonthYear]);
 
   // Cargar cotizaciones para calendario
   const loadContratadoEvents = useCallback(async () => {
@@ -404,6 +412,16 @@ export default function Dashboard() {
         fechaFin: nextEnd,
       };
     });
+
+    const midDate = addDaysToDateOnly(nextStart, 15);
+    if (midDate) {
+      const parts = midDate.split("-");
+      const año = Number(parts[0]);
+      const mes = Number(parts[1]);
+      if (año > 0 && mes >= 1 && mes <= 12) {
+        setSelectedMonthYear((prev) => (prev.mes === mes && prev.año === año ? prev : { mes, año }));
+      }
+    }
   }, []);
 
   const filteredEvents = useMemo(() => {
@@ -418,6 +436,10 @@ export default function Dashboard() {
       return estado !== "Contratado" && estado !== "No aceptada" && estado !== "Cancelado";
     });
   }, [events, calendarFilter]);
+
+  const MONTH_NAMES_ES = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+  const isCurrentMonth = selectedMonthYear.mes === currentMonthYear.mes && selectedMonthYear.año === currentMonthYear.año;
+  const selectedMonthLabel = isCurrentMonth ? "Mes Actual" : `${MONTH_NAMES_ES[selectedMonthYear.mes - 1]} ${selectedMonthYear.año}`;
 
   return (
     <div className="w-full min-w-0">
@@ -535,11 +557,14 @@ export default function Dashboard() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-gray-600 text-sm font-medium">Eventos Contratados</p>
-                <p className="text-gray-600 text-xs mb-2">(Mes Actual)</p>
+                <p className="text-gray-600 text-xs mb-2">({selectedMonthLabel})</p>
                 {loadingKpis ? (
                   <Loader className="w-4 h-4 animate-spin text-blue-600" />
                 ) : (
-                  <p className="text-2xl font-bold text-blue-600">{kpis.eventosContratadosMes}</p>
+                  <>
+                    <p className="text-2xl font-bold text-blue-600">{kpis.eventosContratadosMes}</p>
+                    {kpisComparison !== null && <p className="text-xs text-gray-400 mt-0.5">Hoy: {kpisComparison.eventosContratadosMes}</p>}
+                  </>
                 )}
               </div>
               <Calendar className="w-8 h-8 text-blue-200" />
@@ -550,11 +575,14 @@ export default function Dashboard() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-gray-600 text-sm font-medium">Eventos Cerrados</p>
-                <p className="text-gray-600 text-xs mb-2">(Mes Actual)</p>
+                <p className="text-gray-600 text-xs mb-2">({selectedMonthLabel})</p>
                 {loadingKpis ? (
                   <Loader className="w-4 h-4 animate-spin text-slate-600" />
                 ) : (
-                  <p className="text-2xl font-bold text-slate-700">{kpis.eventosCerradosMes}</p>
+                  <>
+                    <p className="text-2xl font-bold text-slate-700">{kpis.eventosCerradosMes}</p>
+                    {kpisComparison !== null && <p className="text-xs text-gray-400 mt-0.5">Hoy: {kpisComparison.eventosCerradosMes}</p>}
+                  </>
                 )}
               </div>
               <CheckCircle className="w-8 h-8 text-slate-300" />
@@ -566,13 +594,16 @@ export default function Dashboard() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-gray-600 text-sm font-medium">Ingresos</p>
-                <p className="text-gray-600 text-xs mb-2">(Mes Actual)</p>
+                <p className="text-gray-600 text-xs mb-2">({selectedMonthLabel})</p>
                 {loadingKpis ? (
                   <Loader className="w-4 h-4 animate-spin text-green-600" />
                 ) : (
-                  <p className="text-2xl font-bold text-green-600">
-                    ${kpis.ingresos?.toLocaleString('es-MX') || 0}
-                  </p>
+                  <>
+                    <p className="text-2xl font-bold text-green-600">
+                      ${kpis.ingresos?.toLocaleString('es-MX') || 0}
+                    </p>
+                    {kpisComparison !== null && <p className="text-xs text-gray-400 mt-0.5">Hoy: ${kpisComparison.ingresos?.toLocaleString('es-MX') || 0}</p>}
+                  </>
                 )}
               </div>
               <TrendingUp className="w-8 h-8 text-green-200" />
