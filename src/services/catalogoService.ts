@@ -1,6 +1,7 @@
 import { api } from "../lib/api";
 
-export type CatalogoTipo = "platillos" | "bebidas" | "personal" | "mobiliario" | "audio" | "otros" | "tipoeventos";
+export type CatalogoTipoBuiltin = "platillos" | "bebidas" | "personal" | "mobiliario" | "audio" | "otros" | "tipoeventos";
+export type CatalogoTipo = CatalogoTipoBuiltin | (string & Record<never, never>);
 
 export interface CatalogoItem {
   _id: string;
@@ -50,11 +51,13 @@ export interface ListCatalogoOptions {
   top?: number;
 }
 
-const TIPOS_VALIDOS: CatalogoTipo[] = ["platillos", "bebidas", "personal", "mobiliario", "audio", "otros", "tipoeventos"];
+export const TIPOS_VALIDOS_BUILTIN: CatalogoTipoBuiltin[] = ["platillos", "bebidas", "personal", "mobiliario", "audio", "otros", "tipoeventos"];
 
-export const isValidTipo = (tipo: string): tipo is CatalogoTipo => {
-  return TIPOS_VALIDOS.includes(tipo as CatalogoTipo);
-};
+export const isBuiltinTipo = (tipo: string): tipo is CatalogoTipoBuiltin =>
+  TIPOS_VALIDOS_BUILTIN.includes(tipo as CatalogoTipoBuiltin);
+
+export const isValidTipo = (tipo: string): tipo is CatalogoTipo =>
+  typeof tipo === "string" && tipo.trim().length > 0;
 
 function normalizePositiveNumber(value: unknown, fallback: number) {
   const parsedValue = Number(value);
