@@ -10,7 +10,7 @@ import interactionPlugin from "@fullcalendar/interaction";
 import esLocale from "@fullcalendar/core/locales/es";
 import { listCotizacionesPage } from "../services/cotizacionesService";
 import { useMonthlyKpis } from "../hooks/useMonthlyKpis";
-import { currentPeriod, samePeriod } from "../utils/latestKpisLoader";
+import { currentPeriod } from "../utils/latestKpisLoader";
 import { addDaysToDateOnly, extractDateOnly, toLocalDateOnly } from "../utils/dateOnly";
 import { Calendar, TrendingUp, CheckCircle, FileText, Loader } from "lucide-react";
 import { getQuotationStatusConfig, normalizeQuotationStatus } from "../constants/quotationStatus";
@@ -144,10 +144,7 @@ async function listCalendarCotizaciones(fechaInicio, fechaFin) {
 }
 
 const MONTH_NAMES_ES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
-
-function periodLabel(periodo) {
-  return samePeriod(periodo, currentPeriod()) ? "Mes Actual" : `${MONTH_NAMES_ES[periodo.mes - 1]} ${periodo.año}`;
-}
+const MONTH_NAMES_FULL = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
 
 const formatCount = (value) => String(value ?? 0);
 const formatMoney = (value) => `$${(value ?? 0).toLocaleString("es-MX")}`;
@@ -180,6 +177,7 @@ export default function Dashboard() {
   const loadingKpis = kpisState.status === "loading";
   const kpis = kpisState.kpis;
   const comparacion = kpisState.comparacion;
+  const acumulado = kpisState.acumulado;
 
   useEffect(() => {
     if (kpisState.status === "error") {
@@ -401,6 +399,9 @@ export default function Dashboard() {
     });
   }, [events, calendarFilter]);
 
+  const selectedMonthFull = MONTH_NAMES_FULL[selectedPeriod.mes - 1];
+  const currentMonthFull = MONTH_NAMES_FULL[currentPeriod().mes - 1];
+
   return (
     <div className="w-full min-w-0">
       {/* CSS personalizado para el calendario */}
@@ -517,25 +518,36 @@ export default function Dashboard() {
             return (
               <div key={card.key} className="bg-white rounded-lg shadow p-2" data-kpi={card.key}>
                 <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-gray-600 text-sm font-medium">{card.title}</p>
-                    <p className="text-gray-600 text-xs mb-2" data-kpi-periodo>({periodLabel(selectedPeriod)})</p>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-gray-600 text-sm font-medium mb-1">{card.title}</p>
                     {loadingKpis ? (
                       <Loader className={`w-4 h-4 animate-spin ${card.spin}`} />
-                    ) : kpis ? (
-                      <>
-                        <p className={`text-2xl font-bold ${card.color}`} data-kpi-valor>{card.format(kpis[card.key])}</p>
-                        {comparacion && (
-                          <p className="text-xs text-gray-400 mt-0.5" data-kpi-comparacion>
-                            Mes actual: {card.format(comparacion.kpis[card.key])}
-                          </p>
-                        )}
-                      </>
                     ) : (
-                      <p className="text-sm text-gray-400" data-kpi-error>No disponible</p>
+                      <div className="mt-1 space-y-1">
+                        <div className="flex items-baseline justify-between gap-1" data-kpi-row="visualizado">
+                          <span className="text-xs text-gray-500">{selectedMonthFull}</span>
+                          <span className={`text-lg font-bold ${card.color}`} data-kpi-valor>
+                            {kpis ? card.format(kpis[card.key]) : "—"}
+                          </span>
+                        </div>
+                        <div className="flex items-baseline justify-between gap-1" data-kpi-row="acumulado">
+                          <span className="text-xs text-gray-400">Acumulado anual</span>
+                          <span className="text-sm font-semibold text-gray-500" data-kpi-acumulado>
+                            {acumulado ? card.format(acumulado[card.key]) : "—"}
+                          </span>
+                        </div>
+                        {comparacion && (
+                          <div className="flex items-baseline justify-between gap-1" data-kpi-row="actual">
+                            <span className="text-xs text-gray-400">{currentMonthFull}</span>
+                            <span className="text-sm font-semibold text-gray-500" data-kpi-comparacion>
+                              {card.format(comparacion.kpis[card.key])}
+                            </span>
+                          </div>
+                        )}
+                      </div>
                     )}
                   </div>
-                  <Icon className={`w-8 h-8 ${card.iconColor}`} />
+                  <Icon className={`w-8 h-8 ${card.iconColor} ml-2 flex-shrink-0`} />
                 </div>
               </div>
             );
