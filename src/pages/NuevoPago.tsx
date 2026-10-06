@@ -190,6 +190,7 @@ export default function NuevoPago() {
         pago: pagoCreado,
         cotizacionId: data.cotizacionId,
       });
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (err: any) {
       const status = Number(err?.response?.status || 0);
       if (status === 401) {
