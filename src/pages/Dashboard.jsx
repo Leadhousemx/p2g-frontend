@@ -9,7 +9,8 @@ import timeGridPlugin from "@fullcalendar/timegrid";
 import interactionPlugin from "@fullcalendar/interaction";
 import esLocale from "@fullcalendar/core/locales/es";
 import { listCotizacionesPage } from "../services/cotizacionesService";
-import { getDashboardKPIs } from "../services/kpisService";
+import { useMonthlyKpis } from "../hooks/useMonthlyKpis";
+import { currentPeriod, samePeriod } from "../utils/latestKpisLoader";
 import { addDaysToDateOnly, extractDateOnly, toLocalDateOnly } from "../utils/dateOnly";
 import { Calendar, TrendingUp, CheckCircle, FileText, Loader } from "lucide-react";
 import { getQuotationStatusConfig, normalizeQuotationStatus } from "../constants/quotationStatus";
@@ -142,6 +143,23 @@ async function listCalendarCotizaciones(fechaInicio, fechaFin) {
   return collected;
 }
 
+const MONTH_NAMES_ES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+
+function periodLabel(periodo) {
+  return samePeriod(periodo, currentPeriod()) ? "Mes Actual" : `${MONTH_NAMES_ES[periodo.mes - 1]} ${periodo.año}`;
+}
+
+const formatCount = (value) => String(value ?? 0);
+const formatMoney = (value) => `$${(value ?? 0).toLocaleString("es-MX")}`;
+
+const KPI_CARDS = [
+  { key: "eventosContratadosMes", title: "Eventos Contratados", icon: Calendar, color: "text-blue-600", spin: "text-blue-600", iconColor: "text-blue-200", format: formatCount },
+  { key: "eventosCerradosMes", title: "Eventos Cerrados", icon: CheckCircle, color: "text-slate-700", spin: "text-slate-600", iconColor: "text-slate-300", format: formatCount },
+  { key: "ingresos", title: "Ingresos", icon: TrendingUp, color: "text-green-600", spin: "text-green-600", iconColor: "text-green-200", format: formatMoney },
+  { key: "eventosConfirmadosMes", title: "Eventos Confirmados", icon: CheckCircle, color: "text-purple-600", spin: "text-purple-600", iconColor: "text-purple-200", format: formatCount },
+  { key: "cotizacionesMes", title: "Cotizaciones", icon: FileText, color: "text-orange-600", spin: "text-orange-600", iconColor: "text-orange-200", format: formatCount },
+];
+
 export default function Dashboard() {
   const [calendarFilter, setCalendarFilter] = useState("todos");
   const navigate = useNavigate();
@@ -152,54 +170,22 @@ export default function Dashboard() {
   const [tooltip, setTooltip] = useState(null);
   const [viewportSize, setViewportSize] = useState(() => getViewportSize());
 
-  // KPIs
-  const [kpis, setKpis] = useState({
-    eventosContratadosMes: 0,
-    eventosCerradosMes: 0,
-    ingresos: 0,
-    eventosConfirmadosAño: 0,
-    cotizacionesPendientes: 0,
-  });
-  const [loadingKpis, setLoadingKpis] = useState(false);
+  // KPIs del mes visible en el calendario (punto medio del rango, válido en vista de mes/semana/día)
+  const selectedPeriod = useMemo(() => {
+    const mid = addDaysToDateOnly(calendarRange.fechaInicio, 15) || calendarRange.fechaInicio;
+    const [y, m] = String(mid || "").split("-").map(Number);
+    return y > 0 && m >= 1 && m <= 12 ? { mes: m, año: y } : currentPeriod();
+  }, [calendarRange.fechaInicio]);
+  const kpisState = useMonthlyKpis(selectedPeriod);
+  const loadingKpis = kpisState.status === "loading";
+  const kpis = kpisState.kpis;
+  const comparacion = kpisState.comparacion;
 
-  const normalizeNumber = useCallback((value) => {
-    if (value === null || value === undefined) return 0;
-    if (typeof value === "number") return value;
-    if (typeof value === "string") {
-      const cleaned = value.replace(/[^0-9.-]/g, "");
-      const parsed = Number(cleaned);
-      return Number.isFinite(parsed) ? parsed : 0;
+  useEffect(() => {
+    if (kpisState.status === "error") {
+      logger.error("[ERROR Dashboard] No se pudieron cargar los KPIs:", kpisState.error);
     }
-    return 0;
-  }, []);
-
-  // Cargar KPIs
-  const loadKpis = useCallback(async () => {
-    setLoadingKpis(true);
-    try {
-      const data = await getDashboardKPIs();
-      const resolved = data?.kpis || data?.data || data?.result || data || {};
-      setKpis({
-        eventosContratadosMes: normalizeNumber(
-          resolved.eventosContratadosMes ?? resolved.eventosContratadosMesActual
-        ),
-        eventosCerradosMes: normalizeNumber(
-          resolved.eventosCerradosMes ?? resolved.eventosCerradosMesActual
-        ),
-        ingresos: normalizeNumber(resolved.ingresos ?? resolved.ingresosMesActual),
-        eventosConfirmadosAño: normalizeNumber(
-          resolved.eventosConfirmadosAño ?? resolved.eventosConfirmadosAno
-        ),
-        cotizacionesPendientes: normalizeNumber(
-          resolved.cotizacionesPendientes ?? resolved.cotizacionesPendientesAprobacion
-        ),
-      });
-    } catch (err) {
-      logger.error("[ERROR Dashboard] No se pudieron cargar los KPIs:", err);
-    } finally {
-      setLoadingKpis(false);
-    }
-  }, [normalizeNumber]);
+  }, [kpisState]);
 
   // Cargar cotizaciones para calendario
   const loadContratadoEvents = useCallback(async () => {
@@ -249,10 +235,6 @@ export default function Dashboard() {
   useEffect(() => {
     void loadContratadoEvents();
   }, [loadContratadoEvents]);
-
-  useEffect(() => {
-    void loadKpis();
-  }, [loadKpis]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -528,88 +510,36 @@ export default function Dashboard() {
       )}
 
       <main className="p-2 flex min-w-0 flex-col gap-2" onMouseLeave={handleCalendarMouseLeave}>
-        {/* KPI Cards */}
+        {/* KPI Cards: todas del mes seleccionado; con un mes distinto del actual se compara contra el actual */}
         <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-5">
-          {/* Card 1: Eventos Contratados en el Mes */}
-          <div className="bg-white rounded-lg shadow p-2">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-gray-600 text-sm font-medium">Eventos Contratados</p>
-                <p className="text-gray-600 text-xs mb-2">(Mes Actual)</p>
-                {loadingKpis ? (
-                  <Loader className="w-4 h-4 animate-spin text-blue-600" />
-                ) : (
-                  <p className="text-2xl font-bold text-blue-600">{kpis.eventosContratadosMes}</p>
-                )}
+          {KPI_CARDS.map((card) => {
+            const Icon = card.icon;
+            return (
+              <div key={card.key} className="bg-white rounded-lg shadow p-2" data-kpi={card.key}>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-gray-600 text-sm font-medium">{card.title}</p>
+                    <p className="text-gray-600 text-xs mb-2" data-kpi-periodo>({periodLabel(selectedPeriod)})</p>
+                    {loadingKpis ? (
+                      <Loader className={`w-4 h-4 animate-spin ${card.spin}`} />
+                    ) : kpis ? (
+                      <>
+                        <p className={`text-2xl font-bold ${card.color}`} data-kpi-valor>{card.format(kpis[card.key])}</p>
+                        {comparacion && (
+                          <p className="text-xs text-gray-400 mt-0.5" data-kpi-comparacion>
+                            Mes actual: {card.format(comparacion.kpis[card.key])}
+                          </p>
+                        )}
+                      </>
+                    ) : (
+                      <p className="text-sm text-gray-400" data-kpi-error>No disponible</p>
+                    )}
+                  </div>
+                  <Icon className={`w-8 h-8 ${card.iconColor}`} />
+                </div>
               </div>
-              <Calendar className="w-8 h-8 text-blue-200" />
-            </div>
-          </div>
-
-          <div className="bg-white rounded-lg shadow p-2">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-gray-600 text-sm font-medium">Eventos Cerrados</p>
-                <p className="text-gray-600 text-xs mb-2">(Mes Actual)</p>
-                {loadingKpis ? (
-                  <Loader className="w-4 h-4 animate-spin text-slate-600" />
-                ) : (
-                  <p className="text-2xl font-bold text-slate-700">{kpis.eventosCerradosMes}</p>
-                )}
-              </div>
-              <CheckCircle className="w-8 h-8 text-slate-300" />
-            </div>
-          </div>
-
-          {/* Card 2: Ingresos Generados */}
-          <div className="bg-white rounded-lg shadow p-2">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-gray-600 text-sm font-medium">Ingresos</p>
-                <p className="text-gray-600 text-xs mb-2">(Mes Actual)</p>
-                {loadingKpis ? (
-                  <Loader className="w-4 h-4 animate-spin text-green-600" />
-                ) : (
-                  <p className="text-2xl font-bold text-green-600">
-                    ${kpis.ingresos?.toLocaleString('es-MX') || 0}
-                  </p>
-                )}
-              </div>
-              <TrendingUp className="w-8 h-8 text-green-200" />
-            </div>
-          </div>
-
-          {/* Card 3: Eventos Confirmados Año */}
-          <div className="bg-white rounded-lg shadow p-2">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-gray-600 text-sm font-medium">Eventos Confirmados</p>
-                <p className="text-gray-600 text-xs mb-2">(Año Actual)</p>
-                {loadingKpis ? (
-                  <Loader className="w-4 h-4 animate-spin text-purple-600" />
-                ) : (
-                  <p className="text-2xl font-bold text-purple-600">{kpis.eventosConfirmadosAño}</p>
-                )}
-              </div>
-              <CheckCircle className="w-8 h-8 text-purple-200" />
-            </div>
-          </div>
-
-          {/* Card 4: Cotizaciones Pendientes */}
-          <div className="bg-white rounded-lg shadow p-2">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-gray-600 text-sm font-medium">Cotizaciones</p>
-                <p className="text-gray-600 text-xs mb-2">(Pendientes)</p>
-                {loadingKpis ? (
-                  <Loader className="w-4 h-4 animate-spin text-orange-600" />
-                ) : (
-                  <p className="text-2xl font-bold text-orange-600">{kpis.cotizacionesPendientes}</p>
-                )}
-              </div>
-              <FileText className="w-8 h-8 text-orange-200" />
-            </div>
-          </div>
+            );
+          })}
         </div>
 
         {/* Calendario */}
