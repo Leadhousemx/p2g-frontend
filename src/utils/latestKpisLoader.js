@@ -50,9 +50,17 @@ export const normalizeKpis = (data, periodo) => {
   return out;
 };
 
+// Sin validación de periodo: para acumulado anual donde el backend aún no filtra por mes.
+export const normalizeKpisLoose = (data) => {
+  const resolved = data?.kpis || data?.data || data?.result || data || {};
+  const out = {};
+  for (const key of KPI_KEYS) out[key] = normalizeNumber(resolved[key]);
+  return out;
+};
+
 /**
  * fetchKpis(periodo, signal) -> Promise<respuesta del endpoint>
- * onState(estado): { status: "loading" | "ready" | "error", periodo, kpis, comparacion, error }
+ * onState(estado): { status: "loading" | "ready" | "error", periodo, kpis, comparacion, acumulado, error }
  */
 export function createLatestKpisLoader({ fetchKpis, onState, now = () => new Date() }) {
   let seq = 0;
@@ -66,24 +74,38 @@ export function createLatestKpisLoader({ fetchKpis, onState, now = () => new Dat
     const actual = currentPeriod(now());
     const esActual = samePeriod(periodo, actual);
 
-    onState({ status: "loading", periodo, kpis: null, comparacion: null, error: null });
+    onState({ status: "loading", periodo, kpis: null, comparacion: null, acumulado: null, error: null });
     try {
-      const [sel, cur] = await Promise.all([
+      const mesesAcum = Array.from({ length: periodo.mes }, (_, i) => i + 1);
+      const [sel, cur, ...monthlyRaw] = await Promise.all([
         fetchKpis(periodo, signal),
         esActual ? Promise.resolve(null) : fetchKpis(actual, signal),
+        ...mesesAcum.map((m) => fetchKpis({ mes: m, año: periodo.año }, signal)),
       ]);
       if (mine !== seq) return false;
+      const acumZero = { eventosContratadosMes: 0, eventosCerradosMes: 0, ingresos: 0, eventosConfirmadosMes: 0, cotizacionesMes: 0 };
+      const acumulado = monthlyRaw.reduce((acc, md) => {
+        const mk = normalizeKpisLoose(md);
+        return {
+          eventosContratadosMes: acc.eventosContratadosMes + mk.eventosContratadosMes,
+          eventosCerradosMes: acc.eventosCerradosMes + mk.eventosCerradosMes,
+          ingresos: acc.ingresos + mk.ingresos,
+          eventosConfirmadosMes: mk.eventosConfirmadosMes,
+          cotizacionesMes: mk.cotizacionesMes,
+        };
+      }, acumZero);
       onState({
         status: "ready",
         periodo,
         kpis: normalizeKpis(sel, periodo),
         comparacion: cur === null ? null : { periodo: actual, kpis: normalizeKpis(cur, actual) },
+        acumulado,
         error: null,
       });
       return true;
     } catch (error) {
       if (mine !== seq || isAbort(error)) return false;
-      onState({ status: "error", periodo, kpis: null, comparacion: null, error });
+      onState({ status: "error", periodo, kpis: null, comparacion: null, acumulado: null, error });
       return false;
     }
   };
